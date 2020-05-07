@@ -356,6 +356,15 @@ AM_CONDITIONAL([PLUGIN_PROCDUMP], [test x$plugin_procdump = xyes])
 if test x$plugin_procdump = xyes; then
   AC_DEFINE_UNQUOTED(ENABLE_PLUGIN_PROCDUMP, 1, "")
 fi
+AC_ARG_ENABLE([plugin_xowmon],
+  [AS_HELP_STRING([--disable-plugin-xowmon],
+    [Enable the execute-on-write tracing plugin @<:@yes@:>@])],
+  [plugin_xowmon="$enableval"],
+  [plugin_xowmon="yes"])
+AM_CONDITIONAL([PLUGIN_XOWMON], [test x$plugin_xowmon = xyes])
+if test x$plugin_xowmon = xyes; then
+  AC_DEFINE_UNQUOTED(ENABLE_PLUGIN_XOWMON, 1, "")
+fi
 
 #####################################################
 
@@ -632,6 +641,7 @@ WMIMon:       $plugin_wmimon
 MEMDump:      $plugin_memdump
 ProcDump:     $plugin_procdump
 APIMon:       $plugin_apimon
+XOWMon:       $plugin_xowmon
 -------------------------------------------------------------------------------
 REPL:         $repl
 -------------------------------------------------------------------------------])

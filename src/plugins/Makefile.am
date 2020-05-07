@@ -260,6 +260,11 @@ sources += procdump/writer.h
 sources += procdump/minidump.h
 endif
 
+if PLUGIN_XOWMON
+sources += xowmon/xowmon.cpp
+sources += xowmon/xowmon.h
+endif
+
 ###############################################################################
 sources += plugins.cpp plugins.h plugins_ex.cpp plugins_ex.h plugin_utils.cpp plugin_utils.h private.h output_format.h
 
