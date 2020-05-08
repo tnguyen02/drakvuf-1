@@ -263,6 +263,7 @@ endif
 if PLUGIN_XOWMON
 sources += xowmon/xowmon.cpp
 sources += xowmon/xowmon.h
+sources += xowmon/private.h
 endif
 
 ###############################################################################

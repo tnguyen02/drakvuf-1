@@ -25,7 +25,7 @@ public:
     GHashTable* write_traps;
     GHashTable* execute_traps;
 
-    GList* remove_traps;
+    GSList* rescan_list; // list of physical addresses (not GFNs) that has been written to. need to do a resurse rescan
 
     // keeps track of which gfn is what level in the page table
     // 4 - pml4; max 1
