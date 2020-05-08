@@ -773,8 +773,8 @@
 
 static event_response_t execute_trap_cb(drakvuf_t drakvuf, drakvuf_trap_info* info)
 {
-    fprintf(stdout, "fail 7\n");
     fprintf(stdout, "[xowmon] execute trap pa: %" PRIx64 " rip: %" PRIx64 "\n", info->trap_pa, info->regs->rip);
+    fflush(stdout);
     return VMI_EVENT_RESPONSE_NONE;
 }
 
@@ -782,7 +782,7 @@ static event_response_t rescan_cb(drakvuf_t drakvuf, drakvuf_trap_info* info)
 {
     // get the rescan list
     // call recurse rescan
-    fprintf(stdout, "rescan cb\n");
+    // fprintf(stdout, "rescan cb\n");
     xowmon* plugin = (xowmon*) info->trap->data;
     addr_t* trap_pa;
     addr_t gfn;
@@ -790,7 +790,6 @@ static event_response_t rescan_cb(drakvuf_t drakvuf, drakvuf_trap_info* info)
     addr_t entry;
     addr_t next_gfn;
     vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
-    fprintf(stdout, "fail 0\n");
     for (GSList* i = plugin->rescan_list; i != NULL; i = i->next)
     {
         // read the trap pa to get the next gfn, do the recurse add
@@ -820,7 +819,7 @@ static event_response_t write_trap_cb(drakvuf_t drakvuf, drakvuf_trap_info* info
     uint8_t* level;
     // drakvuf_trap_t* tmp_trap;
 
-    fprintf(stdout, "write trap cb gfn %" PRIx64 "\n", gfn);
+    // fprintf(stdout, "write trap cb gfn %" PRIx64 "\n", gfn);
 
     // vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
     drakvuf_lock_and_get_vmi(drakvuf);
@@ -832,7 +831,7 @@ static event_response_t write_trap_cb(drakvuf_t drakvuf, drakvuf_trap_info* info
     // the page we are tracking does not correspond to sample.exe -> stop tracking
     if (info->proc_data.pid != plugin->pid)
     {
-        fprintf(stdout, "bad pid gfn %" PRIx64 "\n", gfn);
+        // fprintf(stdout, "bad pid gfn %" PRIx64 "\n", gfn);
         // add trap to list of traps to be removed. maybe the issue is we can't remove traps that we're currently in?
         g_hash_table_remove(plugin->write_traps, &gfn);
         g_hash_table_remove(plugin->execute_traps, &gfn);
@@ -881,7 +880,7 @@ static event_response_t write_trap_cb(drakvuf_t drakvuf, drakvuf_trap_info* info
         //  - track memaccess reads at that specific location. when read, then get value and then recurse
         //  just do a rescan
         //  - add this page to the rescan list
-        fprintf(stdout, "[xowmon] write to page level >= 1 pa: %" PRIx64 "\n", info->trap_pa);
+        // fprintf(stdout, "[xowmon] write to page level >= 1 pa: %" PRIx64 "\n", info->trap_pa);
         plugin->rescan_list = g_slist_prepend(plugin->rescan_list, g_memdup(&info->trap_pa, sizeof(addr_t)));
         // try reading rip instruction
         // access_context_t ctx =
@@ -919,8 +918,8 @@ static void recurse_create_page_table_traps(drakvuf_t drakvuf, vmi_instance_t vm
     // if went beyond page table entry, return. we've finished hitting the leaf nodes
     if (level < 0) { return; }
     // check no repeats
-    if (g_hash_table_contains(plugin->write_traps, &gfn)) { fprintf(stdout, "write trap repeat %" PRIx64 "\n", gfn); return; }
-    if (g_hash_table_contains(plugin->execute_traps, &gfn)) { fprintf(stdout, "exec trap repeat %" PRIx64 "\n", gfn); return; }
+    if (g_hash_table_contains(plugin->write_traps, &gfn)) { return; fprintf(stdout, "write trap repeat %" PRIx64 "\n", gfn); return; }
+    if (g_hash_table_contains(plugin->execute_traps, &gfn)) { return; fprintf(stdout, "exec trap repeat %" PRIx64 "\n", gfn); return; }
     drakvuf_trap_t* write_trap = (drakvuf_trap_t*) malloc(sizeof(drakvuf_trap_t));
     write_trap->type = MEMACCESS;
     write_trap->cb = write_trap_cb;
