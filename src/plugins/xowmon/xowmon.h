@@ -13,7 +13,7 @@ class xowmon: public pluginex
 {
 public:
     drakvuf_trap_t cr3_trap; // to keep track of the trap on cr3, released when sample.exe is found
-    vmi_event_t single_step_event;
+    drakvuf_trap_t rescan_trap; // to keep track of the trap on cr3, released when sample.exe is found
 
     vmi_pid_t pid;
     // max physical address space in bits

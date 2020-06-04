@@ -10,7 +10,7 @@
 #include "xowmon.h"
 #include "private.h"
 
-void print_xow(output_format_t format, drakvuf_t drakvuf, drakvuf_trap_info* info)
+void print_xow(output_format_t format, drakvuf_t drakvuf, drakvuf_trap_info* info, uint64_t instr)
 {
     // print out:
     // plugin, timestamp, pid, ppid, processname, cr3, rip
@@ -18,15 +18,15 @@ void print_xow(output_format_t format, drakvuf_t drakvuf, drakvuf_trap_info* inf
     switch (format)
     {
         case OUTPUT_CSV:
-            printf("xowmon," FORMAT_TIMEVAL ",%" PRIu32 ",%" PRIu32 ",\"%s\",%" PRIx64 ",%" PRIx64 "\n",
+            printf("xowmon," FORMAT_TIMEVAL ",%" PRIu32 ",%" PRIu32 ",\"%s\",%" PRIx64 ",%" PRIx64 ",%" PRIx64 "\n",
                     UNPACK_TIMEVAL(info->timestamp), info->proc_data.pid,
-                    info->proc_data.ppid, info->proc_data.name, info->regs->cr3, info->regs->rip);
+                    info->proc_data.ppid, info->proc_data.name, info->regs->cr3, info->regs->rip, instr);
             break;
         case OUTPUT_KV:
             printf("xowmon Time=" FORMAT_TIMEVAL ",PID=%" PRIu32 ",PPID=%" PRIu32
-                    "ProcessName=\"%s\",CR3=%" PRIx64 ",RIP=%" PRIx64 "\n",
+                    "ProcessName=\"%s\",CR3=%" PRIx64 ",RIP=%" PRIx64 ", INSTR=%" PRIx64 "\n",
                     UNPACK_TIMEVAL(info->timestamp), info->proc_data.pid,
-                    info->proc_data.ppid, info->proc_data.name, info->regs->cr3, info->regs->rip);
+                    info->proc_data.ppid, info->proc_data.name, info->regs->cr3, info->regs->rip, instr);
             break;
         case OUTPUT_JSON:
             escaped_pname = drakvuf_escape_str(info->proc_data.name);
@@ -37,17 +37,18 @@ void print_xow(output_format_t format, drakvuf_t drakvuf, drakvuf_trap_info* inf
                 "\"PPID\":%" PRIu32 ","
                 "\"ProcessName\":%s,"
                 "\"CR3\":\"%" PRIx64 "\","
-                "\"RIP\":\"%" PRIx64 "\""
+                "\"RIP\":\"%" PRIx64 "\","
+                "\"Instructions\":%" PRIx64 "\""
                 "}\n",
                 UNPACK_TIMEVAL(info->timestamp), info->proc_data.pid,
-                info->proc_data.ppid, info->proc_data.name, info->regs->cr3, info->regs->rip);
+                info->proc_data.ppid, escaped_pname, info->regs->cr3, info->regs->rip, instr);
             break;
         default:
         case OUTPUT_DEFAULT:
             printf("[XOWMON] TIME:" FORMAT_TIMEVAL " PID:%" PRIu32 " PPID:%" PRIu32
-                    "ProcessName:%s CR3:%" PRIx64 " RIP:%" PRIx64 "\n",
+                    "ProcessName:%s CR3:%" PRIx64 " RIP:%" PRIx64 " Instructions:%" PRIx64 "\n",
                     UNPACK_TIMEVAL(info->timestamp), info->proc_data.pid,
-                    info->proc_data.ppid, info->proc_data.name, info->regs->cr3, info->regs->rip);
+                    info->proc_data.ppid, info->proc_data.name, info->regs->cr3, info->regs->rip, instr);
             break;
     }
 }
@@ -55,8 +56,31 @@ void print_xow(output_format_t format, drakvuf_t drakvuf, drakvuf_trap_info* inf
 static event_response_t execute_trap_cb(drakvuf_t drakvuf, drakvuf_trap_info* info)
 {
     xowmon* plugin = (xowmon*) info->trap->data;
-    print_xow(plugin->m_output_format, drakvuf, info);
-    drakvuf_remove_trap(drakvuf, &plugin->cr3_trap, nullptr);
+    vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
+
+    access_context_t ctx =
+    {
+        .translate_mechanism = VMI_TM_PROCESS_DTB,
+        .dtb = info->regs->cr3,
+        .addr = info->regs->rip
+    };
+
+    uint64_t instr = 0;
+    uint8_t instr_temp = 0;
+
+    for (int i = 0; i < 8; i++)
+    {
+        ctx.addr = info->regs->rip + i;
+        if (VMI_FAILURE == vmi_read_8(vmi, &ctx, &instr_temp))
+        {
+            PRINT_DEBUG("Fail to fetch instructions at RIP\n");
+        }
+        instr = (instr << 8) | instr_temp;
+    }
+
+    print_xow(plugin->m_output_format, drakvuf, info, instr);
+    drakvuf_remove_trap(drakvuf, &plugin->rescan_trap, nullptr);
+
     GHashTableIter iter;
     gpointer key, value;
     g_hash_table_iter_init(&iter, plugin->write_traps);
@@ -72,6 +96,7 @@ static event_response_t execute_trap_cb(drakvuf_t drakvuf, drakvuf_trap_info* in
     g_hash_table_destroy(plugin->write_traps);
     g_hash_table_destroy(plugin->execute_traps);
     g_hash_table_destroy(plugin->gfn_pagetable_tracker);
+    drakvuf_release_vmi(drakvuf);
     return VMI_EVENT_RESPONSE_NONE;
 }
 
@@ -85,7 +110,9 @@ static event_response_t rescan_cb(drakvuf_t drakvuf, drakvuf_trap_info* info)
     uint8_t* level;
     addr_t entry;
     addr_t next_gfn;
+    PRINT_DEBUG("rescan cb 0\n");
     vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
+    PRINT_DEBUG("rescan cb 1\n");
     for (GSList* i = plugin->rescan_list; i != NULL; i = i->next)
     {
         // read the trap pa to get the next gfn, do the recurse add
@@ -100,10 +127,11 @@ static event_response_t rescan_cb(drakvuf_t drakvuf, drakvuf_trap_info* info)
         if ( !(entry & 0x1) || !next_gfn) { continue; }
         // level - 1 beacuse it's the phy addr of the entry of the current page
         recurse_create_page_table_traps(drakvuf, vmi, plugin, next_gfn, *level - 1);
-        g_free(trap_pa);
     }
+    g_slist_free_full(plugin->rescan_list, g_free);
     plugin->rescan_list = NULL; // reset the list
     drakvuf_release_vmi(drakvuf);
+    PRINT_DEBUG("rescan cb 2\n");
     return VMI_EVENT_RESPONSE_NONE;
 }
 
@@ -140,11 +168,11 @@ static event_response_t write_trap_cb(drakvuf_t drakvuf, drakvuf_trap_info* info
         // execute trap already created, ignore.
         if (g_hash_table_contains(plugin->execute_traps, &gfn)) { goto done; }
         drakvuf_trap_t* execute_trap = (drakvuf_trap_t*) malloc(sizeof(drakvuf_trap_t));
+        memset(execute_trap, 0, sizeof(drakvuf_trap_t));
         execute_trap->type = MEMACCESS;
         execute_trap->cb = execute_trap_cb;
         execute_trap->data = plugin;
         execute_trap->memaccess.gfn = gfn;
-        // TODO: pre or post here? post gives us some errors, need to debug drakvuf for this
         execute_trap->memaccess.type = PRE;
         execute_trap->memaccess.access = VMI_MEMACCESS_X;
         if (!drakvuf_add_trap(drakvuf, execute_trap))
@@ -200,6 +228,7 @@ static void recurse_create_page_table_traps(drakvuf_t drakvuf, vmi_instance_t vm
     if (g_hash_table_contains(plugin->write_traps, &gfn)) { return; }
     if (g_hash_table_contains(plugin->execute_traps, &gfn)) { return; }
     drakvuf_trap_t* write_trap = (drakvuf_trap_t*) malloc(sizeof(drakvuf_trap_t));
+    memset(write_trap, 0, sizeof(drakvuf_trap_t));
     write_trap->type = MEMACCESS;
     write_trap->cb = write_trap_cb;
     write_trap->data = plugin;
@@ -247,22 +276,33 @@ static event_response_t cr3_cb(drakvuf_t drakvuf, drakvuf_trap_info* info)
     addr_t gfn;
     // look for the process of sample.exe only
     if (!strstr(info->proc_data.name, "sample.exe")) { goto done; }
+    gfn = info->regs->cr3 >> 12;
 
     // remove cr3 trap
     drakvuf_remove_trap(drakvuf, info->trap, nullptr);
     plugin->pid = info->proc_data.pid;
 
-    // add new cr3 trap that does rescan of pagetables
-    plugin->cr3_trap.type = REGISTER;
-    plugin->cr3_trap.cb = rescan_cb;
-    plugin->cr3_trap.reg = CR3;
-    plugin->cr3_trap.data = plugin;
-    if (!drakvuf_add_trap(drakvuf, &plugin->cr3_trap))
+    // old: add new cr3 trap that does rescan of pagetables
+    // new: add memtrap rwx on level 4 gfn
+    // TODO: bad, maybe a good idea
+    memset(&plugin->rescan_trap, 0, sizeof(drakvuf_trap_t));
+    // plugin->rescan_trap.type = MEMACCESS;
+    // plugin->rescan_trap.cb = rescan_cb;
+    // plugin->rescan_trap.data = plugin;
+    // plugin->rescan_trap.memaccess.gfn = gfn;
+    // plugin->rescan_trap.memaccess.type = PRE;
+    // plugin->rescan_trap.memaccess.access=VMI_MEMACCESS_RWX;
+
+    plugin->rescan_trap.type = REGISTER;
+    plugin->rescan_trap.cb = rescan_cb;
+    plugin->rescan_trap.reg = CR3;
+    plugin->rescan_trap.data = plugin;
+
+    if (!drakvuf_add_trap(drakvuf, &plugin->rescan_trap))
     {
         PRINT_DEBUG("failed to add rescan cr3 trap\n");
     }
 
-    gfn = info->regs->cr3 >> 12;
     recurse_create_page_table_traps(drakvuf, vmi, plugin, gfn, 4);
 
 done:
@@ -288,6 +328,7 @@ xowmon::xowmon(drakvuf_t drakvuf, output_format_t output)
     this->gfn_pagetable_tracker = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, g_free);
     this->rescan_list = NULL;
 
+    memset(&this->cr3_trap, 0, sizeof(drakvuf_trap_t));
     this->cr3_trap.type = REGISTER;
     this->cr3_trap.cb = cr3_cb;
     this->cr3_trap.reg = CR3;
