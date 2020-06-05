@@ -811,7 +811,7 @@ event_response_t cr3_cb(vmi_instance_t vmi, vmi_event_t* event)
     }
 
     if (trackedPID == true){
-        printf("Tracked PID: %d\n", (int)trap_info.proc_data.pid);
+        PRINT_DEBUG("Tracked PID: %d\n", (int)trap_info.proc_data.pid);
         while (loop)
         {
             trap_info.trap = (drakvuf_trap_t*)loop->data;
