@@ -126,6 +126,7 @@
 #include "vmi.h"
 
 static uint8_t bp = TRAP;
+static int pidTracker[100];
 
 static inline void flush_vmi(drakvuf_t drakvuf)
 {
@@ -138,6 +139,63 @@ static inline void flush_vmi(drakvuf_t drakvuf)
         vmi_rvacache_flush(drakvuf->vmi);
         vmi_symcache_flush(drakvuf->vmi);
         drakvuf->flush_counter = 0;
+    }
+}
+
+static void update_pid_tracker(const char* name, int pid, int ppid){
+        //Add parent sample pid to tracker
+    if (strstr(name, "sample") != false){
+        bool exist = false;
+
+        for (int i = 0; i < sizeof(pidTracker)/sizeof(pidTracker[0]); i++) {
+            if (pidTracker[i] == pid) {
+                PRINT_DEBUG("object exist: %d \n", pid);
+                exist = true;
+                break;
+            }
+        }
+
+        if(exist == false){
+            for (int i = 0; i < sizeof(pidTracker)/sizeof(pidTracker[0]); i++) {
+                if (pidTracker[i] == 0) {
+                    pidTracker[i] = pid;
+                    PRINT_DEBUG("Adding parent sample pid (%d) to track! \n", pid);
+                    break;
+                }
+            } 
+        }
+    }
+
+    //add any child pid to tracker
+    if (ppid != 0 && ppid != 4){
+        bool hasParent = false;
+        bool trackingChildAlready = false;
+
+        for (int i = 0; i < sizeof(pidTracker)/sizeof(pidTracker[0]); i++) {
+            if (pidTracker[i] == pid) {
+                trackingChildAlready = true;
+                break;
+            }
+        }
+
+        if (trackingChildAlready == false) {
+            for (int i = 0; i < sizeof(pidTracker)/sizeof(pidTracker[0]); i++) {
+                if (pidTracker[i] == ppid) {
+                    hasParent = true;
+                    break;
+                }
+            }
+
+            if(hasParent == true){
+                for (int i = 0; i < sizeof(pidTracker)/sizeof(pidTracker[0]); i++) {
+                    if (pidTracker[i] == 0) {
+                        pidTracker[i] = pid;
+                        PRINT_DEBUG("Found a parent pid (%d). Adding child to track: %d \n", ppid, pid);
+                        break;
+                    }
+                } 
+            }
+        }
     }
 }
 
@@ -203,39 +261,55 @@ event_response_t post_mem_cb(vmi_instance_t vmi, vmi_event_t* event)
 
     drakvuf->in_callback = 1;
     GSList* loop = s->traps;
-    while (loop)
-    {
-        drakvuf_trap_t* trap = (drakvuf_trap_t*)loop->data;
-
-        if (trap->cb && trap->memaccess.type == POST &&
-            (trap->memaccess.access & pass->access))
-        {
-            drakvuf_trap_info_t trap_info =
-            {
-                .trap = trap,
-                .proc_data.base_addr = pass->proc_data.base_addr,
-                .proc_data.name      = pass->proc_data.name,
-                .proc_data.pid       = pass->proc_data.pid,
-                .proc_data.ppid      = pass->proc_data.ppid,
-                .proc_data.userid    = pass->proc_data.userid,
-                .proc_data.tid       = pass->proc_data.tid,
-                .attached_proc_data.base_addr = pass->attached_proc_data.base_addr,
-                .attached_proc_data.name      = pass->attached_proc_data.name,
-                .attached_proc_data.pid       = pass->attached_proc_data.pid,
-                .attached_proc_data.ppid      = pass->attached_proc_data.ppid,
-                .attached_proc_data.userid    = pass->attached_proc_data.userid,
-                .attached_proc_data.tid       = pass->attached_proc_data.tid,
-                .trap_pa = pass->pa,
-                .regs = event->x86_regs,
-                .vcpu = event->vcpu_id,
-            };
-
-            trap_info.timestamp = g_get_real_time();
-
-            rsp |= trap->cb(drakvuf, &trap_info);
+    
+    //use tracked process
+    update_pid_tracker(pass->proc_data.name, pass->proc_data.pid, pass->proc_data.ppid);
+    // TODO: Check filtering of post mem
+    bool trackedPID = true;
+    if((int)pass->proc_data.pid != 0){
+        for (int i = 0; i < sizeof(sizeof(pidTracker)/sizeof(pidTracker[0])); i++) {
+            if (pidTracker[i] == (int)pass->proc_data.pid) {
+                trackedPID = true;
+                break;
+            }
         }
+    }
 
-        loop = loop->next;
+    if (trackedPID == true){
+        while (loop)
+        {
+            drakvuf_trap_t* trap = (drakvuf_trap_t*)loop->data;
+
+            if (trap->cb && trap->memaccess.type == POST &&
+                (trap->memaccess.access & pass->access))
+            {
+                drakvuf_trap_info_t trap_info =
+                {
+                    .trap = trap,
+                    .proc_data.base_addr = pass->proc_data.base_addr,
+                    .proc_data.name      = pass->proc_data.name,
+                    .proc_data.pid       = pass->proc_data.pid,
+                    .proc_data.ppid      = pass->proc_data.ppid,
+                    .proc_data.userid    = pass->proc_data.userid,
+                    .proc_data.tid       = pass->proc_data.tid,
+                    .attached_proc_data.base_addr = pass->attached_proc_data.base_addr,
+                    .attached_proc_data.name      = pass->attached_proc_data.name,
+                    .attached_proc_data.pid       = pass->attached_proc_data.pid,
+                    .attached_proc_data.ppid      = pass->attached_proc_data.ppid,
+                    .attached_proc_data.userid    = pass->attached_proc_data.userid,
+                    .attached_proc_data.tid       = pass->attached_proc_data.tid,
+                    .trap_pa = pass->pa,
+                    .regs = event->x86_regs,
+                    .vcpu = event->vcpu_id,
+                };
+
+                trap_info.timestamp = g_get_real_time();
+
+                rsp |= trap->cb(drakvuf, &trap_info);
+            }
+
+            loop = loop->next;
+        }
     }
     drakvuf->in_callback = 0;
 
@@ -406,18 +480,33 @@ event_response_t pre_mem_cb(vmi_instance_t vmi, vmi_event_t* event)
 
     GSList* loop = s->traps;
     drakvuf->in_callback = 1;
-    while (loop)
-    {
-        drakvuf_trap_t* trap = (drakvuf_trap_t*)loop->data;
-
-        if (trap->cb && trap->memaccess.type == PRE &&
-            (trap->memaccess.access & event->mem_event.out_access))
-        {
-            trap_info.trap = trap;
-            rsp |= trap->cb(drakvuf, &trap_info);
+    //use tracked process
+    update_pid_tracker(trap_info.proc_data.name, trap_info.proc_data.pid, trap_info.proc_data.ppid);
+    // TODO: Check filtering of pre mem
+    bool trackedPID = true;
+    if((int)trap_info.proc_data.pid != 0){
+        for (int i = 0; i < sizeof(sizeof(pidTracker)/sizeof(pidTracker[0])); i++) {
+            if (pidTracker[i] == (int)trap_info.proc_data.pid) {
+                trackedPID = true;
+                break;
+            }
         }
+    }
 
-        loop = loop->next;
+    if (trackedPID == true){
+        while (loop)
+        {
+            drakvuf_trap_t* trap = (drakvuf_trap_t*)loop->data;
+
+            if (trap->cb && trap->memaccess.type == PRE &&
+                (trap->memaccess.access & event->mem_event.out_access))
+            {
+                trap_info.trap = trap;
+                rsp |= trap->cb(drakvuf, &trap_info);
+            }
+
+            loop = loop->next;
+        }
     }
 
     /* We need to call breakpoint handlers registered for this physical address */
@@ -608,11 +697,26 @@ event_response_t int3_cb(vmi_instance_t vmi, vmi_event_t* event)
 
     drakvuf->in_callback = 1;
     GSList* loop = s->traps;
-    while (loop)
-    {
-        trap_info.trap = (drakvuf_trap_t*)loop->data;
-        rsp |= trap_info.trap->cb(drakvuf, &trap_info);
-        loop = loop->next;
+
+    //use tracked process
+    update_pid_tracker(trap_info.proc_data.name, trap_info.proc_data.pid, trap_info.proc_data.ppid);
+    bool trackedPID = false;
+    if((int)trap_info.proc_data.pid != 0){
+        for (int i = 0; i < sizeof(sizeof(pidTracker)/sizeof(pidTracker[0])); i++) {
+            if (pidTracker[i] == (int)trap_info.proc_data.pid) {
+                trackedPID = true;
+                break;
+            }
+        }
+    }
+
+    if (trackedPID == true){
+        while (loop)
+        {
+            trap_info.trap = (drakvuf_trap_t*)loop->data;
+            rsp |= trap_info.trap->cb(drakvuf, &trap_info);
+            loop = loop->next;
+        }
     }
     drakvuf->in_callback = 0;
 
@@ -692,12 +796,30 @@ event_response_t cr3_cb(vmi_instance_t vmi, vmi_event_t* event)
 
     drakvuf->in_callback = 1;
     GSList* loop = drakvuf->cr3;
-    while (loop)
-    {
-        trap_info.trap = (drakvuf_trap_t*)loop->data;
-        rsp |= trap_info.trap->cb(drakvuf, &trap_info);
-        loop = loop->next;
+    
+    //use tracked process
+    // TODO: Crashes on updating pid tracker here... Need to fix for xowmon!
+    update_pid_tracker(trap_info.proc_data.name, trap_info.proc_data.pid, trap_info.proc_data.ppid);
+    bool trackedPID = false;
+    if((int)trap_info.proc_data.pid != 0){
+        for (int i = 0; i < sizeof(sizeof(pidTracker)/sizeof(pidTracker[0])); i++) {
+            if (pidTracker[i] == (int)trap_info.proc_data.pid) {
+                trackedPID = true;
+                break;
+            }
+        }
     }
+
+    if (trackedPID == true){
+        printf("Tracked PID: %d\n", (int)trap_info.proc_data.pid);
+        while (loop)
+        {
+            trap_info.trap = (drakvuf_trap_t*)loop->data;
+            rsp |= trap_info.trap->cb(drakvuf, &trap_info);
+            loop = loop->next;
+        }
+    }
+
     drakvuf->in_callback = 0;
 
     g_free(proc_data.name);
@@ -705,6 +827,10 @@ event_response_t cr3_cb(vmi_instance_t vmi, vmi_event_t* event)
 
     process_free_requests(drakvuf);
 
+    if (trackedPID == false){
+        return 0;
+    }
+    
     return rsp;
 }
 
@@ -761,11 +887,26 @@ event_response_t debug_cb(vmi_instance_t vmi, vmi_event_t* event)
 
     drakvuf->in_callback = 1;
     GSList* loop = drakvuf->debug;
-    while (loop)
-    {
-        trap_info.trap = (drakvuf_trap_t*)loop->data;
-        rsp |= trap_info.trap->cb(drakvuf, &trap_info);
-        loop = loop->next;
+    
+    //use tracked process
+    update_pid_tracker(trap_info.proc_data.name, trap_info.proc_data.pid, trap_info.proc_data.ppid);
+    bool trackedPID = false;
+    if((int)trap_info.proc_data.pid != 0){
+        for (int i = 0; i < sizeof(sizeof(pidTracker)/sizeof(pidTracker[0])); i++) {
+            if (pidTracker[i] == (int)trap_info.proc_data.pid) {
+                trackedPID = true;
+                break;
+            }
+        }
+    }
+
+    if (trackedPID == true){
+        while (loop)
+        {
+            trap_info.trap = (drakvuf_trap_t*)loop->data;
+            rsp |= trap_info.trap->cb(drakvuf, &trap_info);
+            loop = loop->next;
+        }
     }
     drakvuf->in_callback = 0;
 
@@ -831,11 +972,26 @@ event_response_t cpuid_cb(vmi_instance_t vmi, vmi_event_t* event)
 
     drakvuf->in_callback = 1;
     GSList* loop = drakvuf->cpuid;
-    while (loop)
-    {
-        trap_info.trap = (drakvuf_trap_t*)loop->data;
-        rsp |= trap_info.trap->cb(drakvuf, &trap_info);
-        loop = loop->next;
+
+    //use tracked process
+    update_pid_tracker(trap_info.proc_data.name, trap_info.proc_data.pid, trap_info.proc_data.ppid);
+    bool trackedPID = false;
+    if((int)trap_info.proc_data.pid != 0){
+        for (int i = 0; i < sizeof(sizeof(pidTracker)/sizeof(pidTracker[0])); i++) {
+            if (pidTracker[i] == (int)trap_info.proc_data.pid) {
+                trackedPID = true;
+                break;
+            }
+        }
+    }
+
+    if (trackedPID == true){
+        while (loop)
+        {
+            trap_info.trap = (drakvuf_trap_t*)loop->data;
+            rsp |= trap_info.trap->cb(drakvuf, &trap_info);
+            loop = loop->next;
+        }
     }
     drakvuf->in_callback = 0;
 
