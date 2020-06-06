@@ -38,7 +38,7 @@ void print_xow(output_format_t format, drakvuf_t drakvuf, drakvuf_trap_info* inf
                 "\"ProcessName\":%s,"
                 "\"CR3\":\"%" PRIx64 "\","
                 "\"RIP\":\"%" PRIx64 "\","
-                "\"Instructions\":%" PRIx64 "\""
+                "\"Instructions\":\"%" PRIx64 "\""
                 "}\n",
                 UNPACK_TIMEVAL(info->timestamp), info->proc_data.pid,
                 info->proc_data.ppid, escaped_pname, info->regs->cr3, info->regs->rip, instr);
