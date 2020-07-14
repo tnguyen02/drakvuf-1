@@ -144,7 +144,7 @@ static inline void flush_vmi(drakvuf_t drakvuf)
 
 static void update_pid_tracker(const char* name, int pid, int ppid){
         //Add parent sample pid to tracker
-    if (strstr(name, "sample") != false){
+    if (strstr(name, "sample") != false || strstr(name, "malwar") != false || strstr(name, "MALWAR") != false){
         bool exist = false;
 
         for (int i = 0; i < sizeof(pidTracker)/sizeof(pidTracker[0]); i++) {
