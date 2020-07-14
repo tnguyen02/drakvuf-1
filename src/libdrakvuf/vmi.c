@@ -700,7 +700,7 @@ event_response_t int3_cb(vmi_instance_t vmi, vmi_event_t* event)
 
     //use tracked process
     update_pid_tracker(trap_info.proc_data.name, trap_info.proc_data.pid, trap_info.proc_data.ppid);
-    bool trackedPID = false;
+    bool trackedPID = true;
     if((int)trap_info.proc_data.pid != 0){
         for (int i = 0; i < sizeof(sizeof(pidTracker)/sizeof(pidTracker[0])); i++) {
             if (pidTracker[i] == (int)trap_info.proc_data.pid) {
@@ -890,7 +890,7 @@ event_response_t debug_cb(vmi_instance_t vmi, vmi_event_t* event)
     
     //use tracked process
     update_pid_tracker(trap_info.proc_data.name, trap_info.proc_data.pid, trap_info.proc_data.ppid);
-    bool trackedPID = false;
+    bool trackedPID = true;
     if((int)trap_info.proc_data.pid != 0){
         for (int i = 0; i < sizeof(sizeof(pidTracker)/sizeof(pidTracker[0])); i++) {
             if (pidTracker[i] == (int)trap_info.proc_data.pid) {
@@ -975,7 +975,7 @@ event_response_t cpuid_cb(vmi_instance_t vmi, vmi_event_t* event)
 
     //use tracked process
     update_pid_tracker(trap_info.proc_data.name, trap_info.proc_data.pid, trap_info.proc_data.ppid);
-    bool trackedPID = false;
+    bool trackedPID = true;
     if((int)trap_info.proc_data.pid != 0){
         for (int i = 0; i < sizeof(sizeof(pidTracker)/sizeof(pidTracker[0])); i++) {
             if (pidTracker[i] == (int)trap_info.proc_data.pid) {
