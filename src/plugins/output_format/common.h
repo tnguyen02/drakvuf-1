@@ -102,202 +102,148 @@
 *                                                                         *
 ***************************************************************************/
 
-#include <libvmi/libvmi.h>
+#ifndef PLUGINS_OUTPUT_FORMAT_COMMON_H
+#define PLUGINS_OUTPUT_FORMAT_COMMON_H
 
-#include "dkommon.h"
-#include "plugins/output_format.h"
+#include "ostream.h"
+
+#include <libdrakvuf/libdrakvuf.h>
+#include <plugins/private.h>
+#include <plugins/type_traits_helpers.h>
 
 #include <algorithm>
+#include <functional>
+#include <iomanip>
+#include <ios>
+#include <iostream>
+#include <map>
+#include <optional>
+#include <sstream>
+#include <string>
+#include <tuple>
+#include <utility>
+#include <variant>
+#include <vector>
 
-enum offset
+struct TimeVal
 {
-    EPROCESS_ACTIVEPROCESSLINKS,
-    LIST_ENTRY_BLINK,
-    LIST_ENTRY_FLINK,
-    LDR_DATA_TABLE_ENTRY_INLOADORDERLINKS,
-    LDR_DATA_TABLE_ENTRY_FULLDLLNAME,
-    __OFFSET_MAX
+    glong tv_sec;
+    glong tv_usec;
 };
 
-static const char* offset_names[__OFFSET_MAX][2] =
+template<class Value>
+auto keyval(const char* key, Value&& value)
 {
-    [EPROCESS_ACTIVEPROCESSLINKS] = {"_EPROCESS", "ActiveProcessLinks"},
-    [LIST_ENTRY_BLINK] = {"_LIST_ENTRY", "Blink"},
-    [LIST_ENTRY_FLINK] = {"_LIST_ENTRY", "Flink"},
-    [LDR_DATA_TABLE_ENTRY_INLOADORDERLINKS] = {"_LDR_DATA_TABLE_ENTRY", "InLoadOrderLinks"},
-    [LDR_DATA_TABLE_ENTRY_FULLDLLNAME] = {"_LDR_DATA_TABLE_ENTRY", "FullDllName"},
+    return std::make_pair(key, std::forward<Value>(value));
+}
+
+namespace fmt
+{
+
+template<class T>
+struct ValHolder
+{
+    T value;
+    ValHolder(T v): value(std::move(v)) {}
 };
 
-static void print_hidden_process_information(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+/* numeric value */
+template<class T, class = void>
+struct Nval
 {
-    dkommon* d = static_cast<dkommon*>(info->trap->data);
-
-    fmt::print(d->format, "dkommon", drakvuf, info,
-               keyval("Message", fmt::Qstr("Hidden Process"))
-              );
-}
-
-static event_response_t check_hidden_process(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
-{
-    dkommon* d = static_cast<dkommon*>(info->trap->data);
-    vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
-
-    access_context_t ctx =
+    Nval(T v)
     {
-        .translate_mechanism = VMI_TM_PROCESS_DTB,
-        .dtb = info->regs->cr3,
-    };
-
-    addr_t list_entry_va = info->attached_proc_data.base_addr + d->offsets[EPROCESS_ACTIVEPROCESSLINKS];
-    addr_t flink = 0;
-    addr_t blink = 0;
-
-    ctx.addr = list_entry_va + d->offsets[LIST_ENTRY_FLINK];
-    if ( VMI_FAILURE == vmi_read_addr(vmi, &ctx, &flink) )
-        goto err;
-
-    ctx.addr = list_entry_va + d->offsets[LIST_ENTRY_BLINK];
-    if ( VMI_FAILURE == vmi_read_addr(vmi, &ctx, &blink) )
-        goto err;
-
-    if (list_entry_va == flink && flink == blink &&
-        std::find(d->processes_list.begin(), d->processes_list.end(), info->attached_proc_data.pid) == d->processes_list.end())
-    {
-        d->processes_list.push_back(info->attached_proc_data.pid);
-        print_hidden_process_information(drakvuf, info);
+        static_assert(always_false<T>::value, "should be integral type");
     }
-    else
-    {
-        goto done;
-    }
+};
 
-err:
-    PRINT_DEBUG("[DKOMmon] Error. Failed to read virtual address.\n");
-
-done:
-    drakvuf_release_vmi(drakvuf);
-
-    return 0;
-}
-
-static event_response_t notify_zero_page_write(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+template<class T>
+struct Nval<T, std::enable_if_t<std::is_integral_v<std::remove_reference_t<T>>, void>>: ValHolder<T>
 {
-    dkommon* d = static_cast<dkommon*>(info->trap->data);
+    Nval(T v): ValHolder<T>(std::move(v)) {}
+};
 
-    fmt::print(d->format, "dkommon", drakvuf, info,
-               keyval("Message", fmt::Qstr("Zero Page Write"))
-              );
-
-    return 0;
-}
-
-static void print_driver(drakvuf_t drakvuf, drakvuf_trap_info_t* info, output_format_t format, const char* message, const char* name)
+/* format specific numeric value */
+template<class T>
+struct Xval: Nval<T>
 {
-    fmt::print(format, "dkommon", drakvuf, info,
-               keyval("Message", fmt::Qstr(message)),
-               keyval("DriverName", fmt::Qstr(name))
-              );
-}
+    bool withbase;
+    Xval(T v, bool use_base = true): Nval<T>(std::move(v)), withbase(use_base) {}
+};
 
-static std::vector<std::string> enumerate_drivers(dkommon* d, drakvuf_t drakvuf)
+/* floating value in fixed format */
+template<class T, class = void>
+struct Fval
 {
-    std::vector<std::string> drivers_list;
-
-    vmi_lock_guard vmi(drakvuf);
-
-    access_context_t ctx =
+    Fval(T v)
     {
-        .translate_mechanism = VMI_TM_PROCESS_DTB,
-    };
-
-    if (VMI_SUCCESS != vmi_pid_to_dtb(vmi.vmi, 4, &ctx.dtb))
-    {
-        PRINT_DEBUG("dkommon:enumerate drivers: failed to get CR3 for System process\n");
-        return drivers_list;
+        static_assert(always_false<T>::value, "should be float type");
     }
+};
 
-    addr_t list_head = 0;
-    ctx.addr = d->modules_list_va;
-    if ( VMI_SUCCESS != vmi_read_addr(vmi.vmi, &ctx, &list_head) )
+template<class T>
+struct Fval<T, std::enable_if_t<std::is_floating_point_v<T>, void>>: ValHolder<T>
+{
+    Fval(T v): ValHolder<T>(std::move(v)) {}
+};
+
+/* raw string value */
+template<class T, class = void>
+struct Rstr
+{
+    Rstr(T v)
     {
-        PRINT_DEBUG("dkommon:enumerate drivers: failed to read PsLoadedModuleList (VA 0x%lx)\n", ctx.addr);
-        return drivers_list;
+        static_assert(always_false<T>::value, "should be the one of: const char*, std::string, std::string_view");
     }
-    list_head -= d->offsets[LDR_DATA_TABLE_ENTRY_INLOADORDERLINKS];
+};
 
-    addr_t entry = list_head;
-    do
+template<class T>
+struct Rstr<T,
+           std::enable_if_t<
+           std::is_same_v<T, char*>,
+           void>
+           >: ValHolder<const std::remove_pointer_t<T>*>
+{
+    using const_ptr_t = const std::remove_pointer_t<T>* ;
+
+    Rstr(T v): ValHolder<const_ptr_t>(std::move(v))
     {
-        ctx.addr = entry + d->offsets[LDR_DATA_TABLE_ENTRY_INLOADORDERLINKS] + d->offsets[LIST_ENTRY_FLINK];
-        if ( VMI_SUCCESS != vmi_read_addr(vmi.vmi, &ctx, &entry) )
+        if constexpr (std::is_same_v<T, const char*>)
         {
-            PRINT_DEBUG("dkommon:enumerate drivers: failed to read next entry (VA 0x%lx)\n", ctx.addr);
-            return drivers_list;
+            if (ValHolder<const_ptr_t>::value == nullptr)
+                ValHolder<const_ptr_t>::value = "(null)";
         }
+    }
+};
 
-        ctx.addr = entry + d->offsets[LDR_DATA_TABLE_ENTRY_FULLDLLNAME];
-        auto name = drakvuf_read_unicode_common(vmi.vmi, &ctx);
-        if (name && name->contents)
+template<class T>
+struct Rstr<T,
+           std::enable_if_t<
+           std::is_same_v<T, const char*>
+           || std::is_same_v<std::decay_t<T>, std::string>
+           || std::is_same_v<std::decay_t<T>, std::string_view>,
+           void>
+           >: ValHolder<T>
+{
+    Rstr(char* v): Rstr<const T>(v) {}
+
+    Rstr(T v): ValHolder<T>(std::move(v))
+    {
+        if constexpr (std::is_same_v<T, const char*>)
         {
-            drivers_list.push_back(std::string(reinterpret_cast<char*>(name->contents)));
-            vmi_free_unicode_str(name);
+            if (ValHolder<T>::value == nullptr)
+                ValHolder<T>::value = "(null)";
         }
-    } while (entry != list_head);
+    }
+};
 
-    return drivers_list;
-}
-
-static event_response_t check_hidden_drivers(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+/* format specific quoted string value */
+template<class T>
+struct Qstr: Rstr<T>
 {
-    dkommon* d = static_cast<dkommon*>(info->trap->data);
+    Qstr(T v): Rstr<T>(std::move(v)) {}
+};
 
-    auto list = enumerate_drivers(d, drakvuf);
+} // namespace fmt
 
-    // Check for new drivers
-    for (auto i: list)
-        if (std::find(d->drivers_list.begin(), d->drivers_list.end(), i) == d->drivers_list.end())
-            print_driver(drakvuf, info, d->format, "Driver Added", i.c_str());
-
-    // Check for deleted drivers
-    for (auto i: d->drivers_list)
-        if (std::find(list.begin(), list.end(), i) == list.end())
-            print_driver(drakvuf, info, d->format, "Driver Removed", i.c_str());
-
-    d->drivers_list = list;
-
-    return VMI_EVENT_RESPONSE_NONE;
-}
-
-dkommon::dkommon(drakvuf_t drakvuf, const void* config, output_format_t output)
-    : format(output)
-    , offsets(new size_t[__OFFSET_MAX])
-{
-    if ( !drakvuf_get_kernel_struct_members_array_rva(drakvuf, offset_names, __OFFSET_MAX, offsets) )
-        throw -1;
-
-    addr_t ml_rva = 0;
-    if ( !drakvuf_get_kernel_symbol_rva( drakvuf, "PsLoadedModuleList", &ml_rva) )
-        throw -1;
-
-    if (!(modules_list_va = drakvuf_exportksym_to_va(drakvuf, 4, nullptr, "ntoskrnl.exe", ml_rva)))
-        throw -1;
-
-    drivers_list = enumerate_drivers(this, drakvuf);
-    for (auto i: drivers_list)
-        PRINT_DEBUG("[DKOMmon] Found driver '%s'\n", i.c_str());
-
-    /* Setup trap for thread switch */
-    processes_trap.cb = check_hidden_process;
-    if (!drakvuf_add_trap(drakvuf, &processes_trap)) throw -1;
-
-    drivers_trap.cb = check_hidden_drivers;
-    if (!drakvuf_add_trap(drakvuf, &drivers_trap)) throw -1;
-
-    zeropage_trap.cb = notify_zero_page_write;
-    if (!drakvuf_add_trap(drakvuf, &zeropage_trap)) throw -1;
-}
-
-dkommon::~dkommon()
-{
-    delete[] offsets;
-}
+#endif // PLUGINS_OUTPUT_FORMAT_COMMON_H

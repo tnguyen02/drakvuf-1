@@ -102,202 +102,249 @@
 *                                                                         *
 ***************************************************************************/
 
-#include <libvmi/libvmi.h>
+#ifndef PLUGINS_OUTPUT_FORMAT_DEFFMT_H
+#define PLUGINS_OUTPUT_FORMAT_DEFFMT_H
 
-#include "dkommon.h"
-#include "plugins/output_format.h"
+#include "common.h"
 
-#include <algorithm>
+#include "type_traits_helpers.h"
 
-enum offset
+namespace deffmt
 {
-    EPROCESS_ACTIVEPROCESSLINKS,
-    LIST_ENTRY_BLINK,
-    LIST_ENTRY_FLINK,
-    LDR_DATA_TABLE_ENTRY_INLOADORDERLINKS,
-    LDR_DATA_TABLE_ENTRY_FULLDLLNAME,
-    __OFFSET_MAX
+
+template <class T>
+constexpr bool print_data(std::ostream& os, const T& data, char sep);
+
+
+template<class T, std::size_t N>
+struct TuplePrinter
+{
+    static bool print(std::ostream& os, const T& data, char sep)
+    {
+        if constexpr (N > 0)
+        {
+            bool printed_prev = TuplePrinter<T, N-1>::print(os, data, sep);
+            if (printed_prev)
+                os << sep;
+            bool printed = print_data(os, std::get<N-1>(data), sep);
+            if (!printed && printed_prev)
+                fmt::unputc(os);
+            return printed;
+        }
+        return false;
+    }
 };
 
-static const char* offset_names[__OFFSET_MAX][2] =
+template <class T, class = void, class...>
+struct DataPrinter
 {
-    [EPROCESS_ACTIVEPROCESSLINKS] = {"_EPROCESS", "ActiveProcessLinks"},
-    [LIST_ENTRY_BLINK] = {"_LIST_ENTRY", "Blink"},
-    [LIST_ENTRY_FLINK] = {"_LIST_ENTRY", "Flink"},
-    [LDR_DATA_TABLE_ENTRY_INLOADORDERLINKS] = {"_LDR_DATA_TABLE_ENTRY", "InLoadOrderLinks"},
-    [LDR_DATA_TABLE_ENTRY_FULLDLLNAME] = {"_LDR_DATA_TABLE_ENTRY", "FullDllName"},
+
+    static bool print(std::ostream& os, const TimeVal& t, char)
+    {
+        os << t.tv_sec << ".";
+
+        auto c = os.fill('0');
+        auto w = os.width(6);
+        os << t.tv_usec << std::setfill(c) << std::setw(w);
+        return true;
+    }
+
+    template <class Tv = T>
+    static bool print(std::ostream& os, const fmt::Nval<Tv>& data, char)
+    {
+        os << data.value;
+        return true;
+    }
+
+    template <class Tv = T>
+    static bool print(std::ostream& os, const fmt::Xval<Tv>& data, char)
+    {
+        auto ff = os.flags();
+        auto base = data.withbase ? "0x" : "";
+        os << base << std::uppercase << std::hex << data.value;
+        os.flags(ff);
+        return true;
+    }
+
+    template <class Tv = T>
+    static bool print(std::ostream& os, const fmt::Fval<Tv>& data, char)
+    {
+        auto ff = os.flags();
+        os << std::fixed << data.value;
+        os.flags(ff);
+        return true;
+    }
+
+    template <class Tv = T>
+    static bool print(std::ostream& os, const fmt::Rstr<Tv>& data, char)
+    {
+        os << data.value;
+        return true;
+    }
+
+    template <class Tv = T>
+    static bool print(std::ostream& os, const fmt::Qstr<Tv>& data, char)
+    {
+        os << '"' << data.value << '"';
+        return true;
+    }
+
+    template <class Tv = T>
+    static bool print(std::ostream& os, const std::function<bool(std::ostream&)>& printer, char)
+    {
+        std::ostringstream ss;
+        bool printed = printer(ss);
+        if (printed)
+            os << ss.str();
+        return printed;
+    }
+
+    template <class Tv = T>
+    static bool print(std::ostream& os, const std::optional<Tv>& data, char sep)
+    {
+        if (!data.has_value())
+            return false;
+
+        return print_data(os, data.value(), sep);
+    }
+
+    template <class Tk, class Tv>
+    static bool print(std::ostream& os, const std::pair<Tk, Tv>& data, char)
+    {
+        static_assert(
+            std::is_same_v<Tk, const char*> ||
+            std::is_same_v<std::decay_t<Tk>, std::string> ||
+            std::is_same_v<std::decay_t<Tk>, std::string_view>,
+            "Unsupported DEFAULT printer key type");
+
+        auto pos = os.tellp();
+        if (print_data(os, fmt::Rstr(data.first), 0))
+        {
+            os << ':';
+            if (print_data(os, data.second, ';'))
+            {
+                return true;
+            }
+        }
+        os.seekp(pos);
+        return false;
+    }
+
+    template <class... Ts>
+    static bool print(std::ostream& os, const std::tuple<Ts...>& data, char sep)
+    {
+        return TuplePrinter<decltype(data), sizeof...(Ts)>::print(os, data, sep);
+    }
+
+    template <class... Ts>
+    static bool print(std::ostream& os, const std::variant<Ts...>& data, char sep)
+    {
+        return std::visit([&os, sep](auto&& arg) mutable {
+            return print_data(os, arg, sep);
+        }, data);
+    }
 };
 
-static void print_hidden_process_information(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+template <class T>
+struct DataPrinter<T, std::enable_if_t<is_iterable<T>::value, void>>
 {
-    dkommon* d = static_cast<dkommon*>(info->trap->data);
-
-    fmt::print(d->format, "dkommon", drakvuf, info,
-               keyval("Message", fmt::Qstr("Hidden Process"))
-              );
-}
-
-static event_response_t check_hidden_process(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
-{
-    dkommon* d = static_cast<dkommon*>(info->trap->data);
-    vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
-
-    access_context_t ctx =
+    static bool print(std::ostream& os, const T& data, char sep)
     {
-        .translate_mechanism = VMI_TM_PROCESS_DTB,
-        .dtb = info->regs->cr3,
-    };
-
-    addr_t list_entry_va = info->attached_proc_data.base_addr + d->offsets[EPROCESS_ACTIVEPROCESSLINKS];
-    addr_t flink = 0;
-    addr_t blink = 0;
-
-    ctx.addr = list_entry_va + d->offsets[LIST_ENTRY_FLINK];
-    if ( VMI_FAILURE == vmi_read_addr(vmi, &ctx, &flink) )
-        goto err;
-
-    ctx.addr = list_entry_va + d->offsets[LIST_ENTRY_BLINK];
-    if ( VMI_FAILURE == vmi_read_addr(vmi, &ctx, &blink) )
-        goto err;
-
-    if (list_entry_va == flink && flink == blink &&
-        std::find(d->processes_list.begin(), d->processes_list.end(), info->attached_proc_data.pid) == d->processes_list.end())
-    {
-        d->processes_list.push_back(info->attached_proc_data.pid);
-        print_hidden_process_information(drakvuf, info);
-    }
-    else
-    {
-        goto done;
-    }
-
-err:
-    PRINT_DEBUG("[DKOMmon] Error. Failed to read virtual address.\n");
-
-done:
-    drakvuf_release_vmi(drakvuf);
-
-    return 0;
-}
-
-static event_response_t notify_zero_page_write(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
-{
-    dkommon* d = static_cast<dkommon*>(info->trap->data);
-
-    fmt::print(d->format, "dkommon", drakvuf, info,
-               keyval("Message", fmt::Qstr("Zero Page Write"))
-              );
-
-    return 0;
-}
-
-static void print_driver(drakvuf_t drakvuf, drakvuf_trap_info_t* info, output_format_t format, const char* message, const char* name)
-{
-    fmt::print(format, "dkommon", drakvuf, info,
-               keyval("Message", fmt::Qstr(message)),
-               keyval("DriverName", fmt::Qstr(name))
-              );
-}
-
-static std::vector<std::string> enumerate_drivers(dkommon* d, drakvuf_t drakvuf)
-{
-    std::vector<std::string> drivers_list;
-
-    vmi_lock_guard vmi(drakvuf);
-
-    access_context_t ctx =
-    {
-        .translate_mechanism = VMI_TM_PROCESS_DTB,
-    };
-
-    if (VMI_SUCCESS != vmi_pid_to_dtb(vmi.vmi, 4, &ctx.dtb))
-    {
-        PRINT_DEBUG("dkommon:enumerate drivers: failed to get CR3 for System process\n");
-        return drivers_list;
-    }
-
-    addr_t list_head = 0;
-    ctx.addr = d->modules_list_va;
-    if ( VMI_SUCCESS != vmi_read_addr(vmi.vmi, &ctx, &list_head) )
-    {
-        PRINT_DEBUG("dkommon:enumerate drivers: failed to read PsLoadedModuleList (VA 0x%lx)\n", ctx.addr);
-        return drivers_list;
-    }
-    list_head -= d->offsets[LDR_DATA_TABLE_ENTRY_INLOADORDERLINKS];
-
-    addr_t entry = list_head;
-    do
-    {
-        ctx.addr = entry + d->offsets[LDR_DATA_TABLE_ENTRY_INLOADORDERLINKS] + d->offsets[LIST_ENTRY_FLINK];
-        if ( VMI_SUCCESS != vmi_read_addr(vmi.vmi, &ctx, &entry) )
+        bool printed = false;
+        for (const auto& v : data)
         {
-            PRINT_DEBUG("dkommon:enumerate drivers: failed to read next entry (VA 0x%lx)\n", ctx.addr);
-            return drivers_list;
+            bool printed_prev = printed;
+            if (printed)
+                os << sep;
+            printed = print_data(os, v, sep);
+            if (!printed && printed_prev)
+                fmt::unputc(os);
         }
+        return true;
+    }
+};
 
-        ctx.addr = entry + d->offsets[LDR_DATA_TABLE_ENTRY_FULLDLLNAME];
-        auto name = drakvuf_read_unicode_common(vmi.vmi, &ctx);
-        if (name && name->contents)
-        {
-            drivers_list.push_back(std::string(reinterpret_cast<char*>(name->contents)));
-            vmi_free_unicode_str(name);
-        }
-    } while (entry != list_head);
-
-    return drivers_list;
-}
-
-static event_response_t check_hidden_drivers(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+template <class T>
+constexpr bool print_data(std::ostream& os, const T& data, char sep)
 {
-    dkommon* d = static_cast<dkommon*>(info->trap->data);
-
-    auto list = enumerate_drivers(d, drakvuf);
-
-    // Check for new drivers
-    for (auto i: list)
-        if (std::find(d->drivers_list.begin(), d->drivers_list.end(), i) == d->drivers_list.end())
-            print_driver(drakvuf, info, d->format, "Driver Added", i.c_str());
-
-    // Check for deleted drivers
-    for (auto i: d->drivers_list)
-        if (std::find(list.begin(), list.end(), i) == list.end())
-            print_driver(drakvuf, info, d->format, "Driver Removed", i.c_str());
-
-    d->drivers_list = list;
-
-    return VMI_EVENT_RESPONSE_NONE;
+    return DataPrinter<T>::print(os, data, sep);
 }
 
-dkommon::dkommon(drakvuf_t drakvuf, const void* config, output_format_t output)
-    : format(output)
-    , offsets(new size_t[__OFFSET_MAX])
+/**/
+
+template <class T, class... Ts>
+constexpr bool print_data(std::ostream& os, const T& data, const Ts& ... rest)
 {
-    if ( !drakvuf_get_kernel_struct_members_array_rva(drakvuf, offset_names, __OFFSET_MAX, offsets) )
-        throw -1;
+    constexpr char sep = ' ';
+    bool printed = print_data(os, data, sep);
+    bool printed_rest = false;
 
-    addr_t ml_rva = 0;
-    if ( !drakvuf_get_kernel_symbol_rva( drakvuf, "PsLoadedModuleList", &ml_rva) )
-        throw -1;
-
-    if (!(modules_list_va = drakvuf_exportksym_to_va(drakvuf, 4, nullptr, "ntoskrnl.exe", ml_rva)))
-        throw -1;
-
-    drivers_list = enumerate_drivers(this, drakvuf);
-    for (auto i: drivers_list)
-        PRINT_DEBUG("[DKOMmon] Found driver '%s'\n", i.c_str());
-
-    /* Setup trap for thread switch */
-    processes_trap.cb = check_hidden_process;
-    if (!drakvuf_add_trap(drakvuf, &processes_trap)) throw -1;
-
-    drivers_trap.cb = check_hidden_drivers;
-    if (!drakvuf_add_trap(drakvuf, &drivers_trap)) throw -1;
-
-    zeropage_trap.cb = notify_zero_page_write;
-    if (!drakvuf_add_trap(drakvuf, &zeropage_trap)) throw -1;
+    if constexpr (sizeof...(rest) > 0)
+    {
+        if (printed)
+            os << sep;
+        printed_rest = print_data(os, rest...);
+        if (!printed_rest && printed)
+            fmt::unputc(os);
+    }
+    return printed || printed_rest;
 }
 
-dkommon::~dkommon()
+/**/
+
+inline void print_common_data(std::ostream& os, drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 {
-    delete[] offsets;
+    if (info)
+    {
+        const char* method = info->trap->name ?: "";
+        std::string procname = "\"";
+        procname += info->attached_proc_data.name ?: "NOPROC";
+        procname += "\"";
+
+        print_data(os,
+                   keyval("TIME", TimeVal{UNPACK_TIMEVAL(info->timestamp)}),
+                   keyval("VCPU", fmt::Nval(info->vcpu)),
+                   keyval("CR3", fmt::Xval(info->regs->cr3)),
+                   keyval(procname.c_str(), fmt::Rstr(method)),
+                   keyval(USERIDSTR(drakvuf), fmt::Nval(info->proc_data.userid)),
+                   keyval("PID", fmt::Nval(info->attached_proc_data.pid)),
+                   keyval("PPID", fmt::Nval(info->attached_proc_data.ppid))
+                  );
+    }
 }
+
+template<class... Args>
+void print(const char* plugin_name, drakvuf_t drakvuf, drakvuf_trap_info_t* info, const Args& ... args)
+{
+    std::string up_name(plugin_name);
+    std::transform(up_name.begin(), up_name.end(), up_name.begin(),
+                   [](uint8_t c)
+    {
+        return std::toupper(c);
+    });
+
+    fmt::cout << '[' << up_name << ']' << ' ';
+
+    bool printed = false;
+    if (info)
+    {
+        print_common_data(fmt::cout, drakvuf, info);
+        printed = true;
+    }
+
+    if constexpr (sizeof...(args) > 0)
+    {
+        constexpr char sep = ' ';
+        if (printed)
+            fmt::cout << sep;
+        if (!print_data(fmt::cout, args...))
+            fmt::unputc(fmt::cout);
+    }
+
+    fmt::cout << "\n";
+    fmt::cout.flush();
+}
+
+} // namespace deffmt
+
+#endif // PLUGINS_OUTPUT_FORMAT_DEFFMT_H

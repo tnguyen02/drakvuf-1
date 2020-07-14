@@ -113,6 +113,7 @@ struct syscalls_config
 {
     const char* syscalls_filter_file;
     const char* win32k_profile;
+    bool disable_sysret;
 };
 
 class syscalls: public plugin
@@ -123,9 +124,10 @@ public:
     json_object* win32k_json;
 
     uint8_t reg_size;
-    page_mode_t pm;
+    bool is32bit;
     output_format_t format;
     os_t os;
+    bool disable_sysret;
 
     size_t *offsets;
 

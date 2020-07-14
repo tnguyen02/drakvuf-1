@@ -137,6 +137,7 @@ typedef enum
     BOOLEAN,
     DEBUGOBJECTINFOCLASS,
     DEVICE_POWER_STATE,
+    DWORD,
     ENLISTMENT_INFORMATION_CLASS,
     EVENT_INFORMATION_CLASS,
     EVENT_TYPE,
@@ -144,6 +145,10 @@ typedef enum
     FILE_INFORMATION_CLASS,
     FS_INFORMATION_CLASS,
     HANDLE,
+    HINSTANCE,
+    HHOOK,
+    HOOKPROC,
+    INT,
     IO_COMPLETION_INFORMATION_CLASS,
     IO_SESSION_STATE,
     JOBOBJECTINFOCLASS,
@@ -282,6 +287,7 @@ static const char* type_names[]
     [BOOLEAN] = "BOOLEAN",
     [DEBUGOBJECTINFOCLASS] = "DEBUGOBJECTINFOCLASS",
     [DEVICE_POWER_STATE] = "DEVICE_POWER_STATE",
+    [DWORD] = "DWORD",
     [ENLISTMENT_INFORMATION_CLASS] = "ENLISTMENT_INFORMATION_CLASS",
     [EVENT_INFORMATION_CLASS] = "EVENT_INFORMATION_CLASS",
     [EVENT_TYPE] = "EVENT_TYPE",
@@ -289,6 +295,10 @@ static const char* type_names[]
     [FILE_INFORMATION_CLASS] = "FILE_INFORMATION_CLASS",
     [FS_INFORMATION_CLASS] = "FS_INFORMATION_CLASS",
     [HANDLE] = "HANDLE",
+    [HINSTANCE] = "HINSTANCE",
+    [HHOOK] = "HHOOK",
+    [HOOKPROC] = "HOOKPROC",
+    [INT] = "INT",
     [IO_COMPLETION_INFORMATION_CLASS] = "IO_COMPLETION_INFORMATION_CLASS",
     [IO_SESSION_STATE] = " IO_SESSION_STATE",
     [JOBOBJECTINFOCLASS] = "JOBOBJECTINFOCLASS",
@@ -450,7 +460,7 @@ struct wrapper
      .args = (const arg_t*)&_name ## _arg                        \
    }
 
-void print_header(output_format_t format, drakvuf_t drakvuf,
+void print_header(output_format_t format, drakvuf_t drakvuf, os_t os,
                   bool syscall, const drakvuf_trap_info_t* info,
                   int nr, const char *module, const syscall_t *sc,
                   uint64_t ret, const char *extra_info);

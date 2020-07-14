@@ -164,7 +164,7 @@ struct hook_target_entry_t
     void* plugin;
 
     hook_target_entry_t(std::string target_name, callback_t callback, const std::vector < std::unique_ptr < ArgumentPrinter > > &argument_printers, void* plugin)
-        : type(HOOK_BY_NAME), target_name(target_name), callback(callback), argument_printers(argument_printers), state(HOOK_FIRST_TRY), plugin(plugin)
+        : type(HOOK_BY_NAME), target_name(target_name), offset(0), callback(callback), argument_printers(argument_printers), state(HOOK_FIRST_TRY), plugin(plugin)
     {}
 
     hook_target_entry_t(std::string target_name, addr_t offset, callback_t callback, const std::vector < std::unique_ptr < ArgumentPrinter > > &argument_printers, void* plugin)
@@ -184,6 +184,16 @@ struct return_hook_target_entry_t
         pid(pid), plugin(plugin), argument_printers(argument_printers) {}
 };
 
+struct hook_target_view_t
+{
+    std::string target_name;
+    addr_t offset;
+    target_hook_state state;
+
+    hook_target_view_t(std::string target_name, addr_t offset, target_hook_state state)
+        : target_name(target_name), offset(offset), state(state) {}
+};
+
 struct dll_view_t
 {
     // relevant while loading
@@ -195,7 +205,7 @@ struct dll_view_t
 };
 
 typedef void (*dll_pre_hook_cb)(drakvuf_t, const dll_view_t*, void*);
-typedef void (*dll_post_hook_cb)(drakvuf_t, const dll_view_t*, void*);
+typedef void (*dll_post_hook_cb)(drakvuf_t, const dll_view_t*, const std::vector<hook_target_view_t> &targets, void*);
 
 struct usermode_cb_registration {
     dll_pre_hook_cb pre_cb;
@@ -207,6 +217,7 @@ typedef enum usermode_reg_status {
     USERMODE_REGISTER_ERROR,
     USERMODE_REGISTER_SUCCESS,
     USERMODE_ARCH_UNSUPPORTED,
+    USERMODE_OS_UNSUPPORTED,
 } usermode_reg_status_t;
 
 usermode_reg_status_t drakvuf_register_usermode_callback(drakvuf_t drakvuf, usermode_cb_registration* reg);

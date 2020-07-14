@@ -355,6 +355,8 @@ static event_response_t internal_perform_hooking(drakvuf_t drakvuf, drakvuf_trap
                     target.state = HOOK_FAILED;
                     return VMI_EVENT_RESPONSE_NONE;
                 }
+
+                target.offset = exec_func - dll_meta->v.real_dll_base;
             }
             else // HOOK_BY_OFFSET
             {
@@ -415,8 +417,14 @@ static event_response_t perform_hooking(drakvuf_t drakvuf, drakvuf_trap_info * i
     event_response_t ret = internal_perform_hooking(drakvuf, info, plugin, dll_meta);
 
     if (!was_hooked && dll_meta->v.is_hooked) {
+        std::vector<hook_target_view_t> targets;
+
+        for (auto& target : dll_meta->targets) {
+            targets.emplace_back(target.target_name, target.offset, target.state);
+        }
+
         for (auto& reg : plugin->plugins) {
-            reg.post_cb(drakvuf, (const dll_view_t*)dll_meta, reg.extra);
+            reg.post_cb(drakvuf, (const dll_view_t*)dll_meta, targets, reg.extra);
         }
     }
 
@@ -777,6 +785,17 @@ static event_response_t copy_on_write_handler(drakvuf_t drakvuf, drakvuf_trap_in
 
 usermode_reg_status_t userhook::init(drakvuf_t drakvuf)
 {
+    {
+        vmi_lock_guard vmi(drakvuf);
+        win_build_info_t build;
+        if (vmi_get_windows_build_info(vmi.vmi, &build) &&
+            VMI_OS_WINDOWS_10 == build.version &&
+            15063 >= build.buildnumber)
+        {
+            return USERMODE_OS_UNSUPPORTED;
+        }
+    }
+
     page_mode_t pm = drakvuf_get_page_mode(drakvuf);
 
     if (pm != VMI_PM_IA32E)

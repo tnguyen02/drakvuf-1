@@ -1197,10 +1197,6 @@ bool inject_trap_mem(drakvuf_t drakvuf, drakvuf_trap_t* trap, bool guard2)
     }
     else
     {
-
-        status_t ret;
-        xen_unshare_gfn(drakvuf->xen, drakvuf->domID, trap->memaccess.gfn);
-
         s = (struct wrapper*)g_slice_alloc0(sizeof(struct wrapper));
         s->drakvuf = drakvuf;
         s->traps = g_slist_prepend(s->traps, trap);
@@ -1213,7 +1209,7 @@ bool inject_trap_mem(drakvuf_t drakvuf, drakvuf_trap_t* trap, bool guard2)
          */
         s->memaccess.guard2 = guard2;
 
-        ret = vmi_set_mem_event(drakvuf->vmi, trap->memaccess.gfn, trap->memaccess.access, drakvuf->altp2m_idx);
+        status_t ret = vmi_set_mem_event(drakvuf->vmi, trap->memaccess.gfn, trap->memaccess.access, drakvuf->altp2m_idx);
         if ( ret == VMI_FAILURE )
         {
             PRINT_DEBUG("*** FAILED TO SET MEMORY TRAP @ PAGE %lu ***\n",
@@ -1577,8 +1573,6 @@ void drakvuf_loop(drakvuf_t drakvuf)
 
     // Ensures all events are processed from the ring
     drakvuf_poll(drakvuf, 0);
-
-    //print_sharing_info(drakvuf->xen, drakvuf->domID);
 
     PRINT_DEBUG("DRAKVUF loop finished\n");
 }
