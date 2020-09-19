@@ -1,16 +1,24 @@
 os: linux
 dist: focal
 language: c
+compiler: clang
 services:
     - docker
 git:
     submodules: false
 addons:
   apt:
+    sources:
+      - sourceline: 'deb http://apt.llvm.org/focal/ llvm-toolchain-focal-11 main'
+        key_url: 'https://apt.llvm.org/llvm-snapshot.gpg.key'
     update: true
     packages:
-    - clang-10
-    - clang-tools-10
+    - clang-11
+    - clang-tools-11
+    - libclang1-11
+    - lld-11
+    - libc++-11-dev
+    - libc++abi-11-dev
     - bison
     - flex
     - libjson-c-dev
@@ -18,9 +26,7 @@ addons:
     - libxen-dev
 env:
   global:
-    - CC=clang-10
-    - CPP=clang-cpp-10
-    - CXX=clang++-10
+    - PATH=/usr/lib/llvm-11/bin:$PATH
     - INSTALLDIR=$PWD/usr/local/
     - LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$PWD/usr/local/lib
     - C_INCLUDE_PATH=$PWD/usr/local/include
@@ -197,8 +203,8 @@ jobs:
         - cd ..
         - ./autogen.sh
       script:
-        - scan-build-10 --status-bugs --use-cc=clang-10 --use-c++=clang++-10 -analyze-headers -disable-checker deadcode.DeadStores ./configure --enable-debug
-        - scan-build-10 --status-bugs --use-cc=clang-10 --use-c++=clang++-10 -analyze-headers -disable-checker deadcode.DeadStores make
+        - scan-build --status-bugs -analyze-headers -disable-checker deadcode.DeadStores ./configure --enable-debug
+        - scan-build --status-bugs -analyze-headers -disable-checker deadcode.DeadStores make
 
 #
 # Coverity (broken at the moment on focal with clang-10)
