@@ -111,9 +111,7 @@
 #include <libdrakvuf/json-util.h>
 
 #include "plugins/output_format.h"
-#include "apimon.h"
-#include "private.h"
-#include "crypto.h"
+#include "rpcmon.h"
 
 
 static void free_trap(drakvuf_trap_t* trap)
@@ -123,6 +121,44 @@ static void free_trap(drakvuf_trap_t* trap)
     delete trap;
 }
 
+struct _GUID
+{
+    uint32_t Data1;
+    uint16_t Data2;
+    uint16_t Data3;
+    uint8_t Data4[8];
+
+    std::string str() const
+    {
+        const int sz = 64;
+        char stream[sz] = {0};
+        snprintf(stream, sz, "\"%08X-%04hX-%04hX-%02hhX%02hhX-%02hhX%02hhX%02hhX%02hhX%02hhX%02hhX\"",
+            Data1, Data2, Data3, Data4[0], Data4[1],
+            Data4[2], Data4[3], Data4[4],
+            Data4[5], Data4[6], Data4[7]);
+
+        return std::string(stream);
+    }
+} __attribute__((packed, aligned(4)));
+
+struct RPC_SYNTAX_IDENTIFIER
+{
+    struct _GUID SyntaxGuid;
+    uint16_t SyntaxVersion;
+} __attribute__((packed, aligned(4)));
+
+struct _RPC_CLIENT_INTERFACE
+{
+    uint32_t Length;
+    RPC_SYNTAX_IDENTIFIER InterfaceId;
+    RPC_SYNTAX_IDENTIFIER TransferSyntax;
+} __attribute__((packed, aligned(4)));
+
+struct _MIDL_STUB_DESC
+{
+    addr_t RpcInterfaceInformation;
+} __attribute__((packed, aligned(4)));
+
 static event_response_t usermode_return_hook_cb(drakvuf_t drakvuf, drakvuf_trap_info* info)
 {
     return_hook_target_entry_t* ret_target = (return_hook_target_entry_t*)info->trap->data;
@@ -131,18 +167,9 @@ static event_response_t usermode_return_hook_cb(drakvuf_t drakvuf, drakvuf_trap_
     if (info->proc_data.pid != ret_target->pid)
         return VMI_EVENT_RESPONSE_NONE;
 
-    auto plugin = (apimon*)ret_target->plugin;
+    auto plugin = (rpcmon*)ret_target->plugin;
 
-    std::map < std::string, std::string > extra_data;
-
-    if(!strcmp(info->trap->name, "CryptGenKey"))
-        extra_data = CryptGenKey_hook(drakvuf, info, ret_target->arguments);
-
-    std::optional<fmt::Qstr<std::string>> clsid;
-
-    if (!ret_target->clsid.empty())
-        clsid = fmt::Qstr(ret_target->clsid);
-
+    std::vector<std::pair<std::string, fmt::Rstr<std::string>>> fmt_extra{};
     std::vector<fmt::Rstr<std::string>> fmt_args{};
     {
         const auto &args = ret_target->arguments;
@@ -151,17 +178,34 @@ static event_response_t usermode_return_hook_cb(drakvuf_t drakvuf, drakvuf_trap_
              arg != std::cend(args) && printer != std::cend(printers);
              ++arg, ++printer) {
             fmt_args.push_back(fmt::Rstr((*printer)->print(drakvuf, info, *arg)));
+
+            if (std::string("pStubDescriptor") == (*printer)->get_name())
+            {
+                vmi_lock_guard vmi(drakvuf);
+
+                size_t bytes_read = 0;
+                access_context_t ctx;
+                ctx.translate_mechanism = VMI_TM_PROCESS_DTB;
+                ctx.dtb = info->regs->cr3;
+                ctx.addr = *arg;
+
+                struct _MIDL_STUB_DESC stub_desc;
+                if (VMI_SUCCESS != vmi_read(vmi, &ctx, sizeof(struct _MIDL_STUB_DESC), &stub_desc, &bytes_read) || bytes_read != sizeof(struct _MIDL_STUB_DESC))
+                    continue;
+
+                ctx.addr = stub_desc.RpcInterfaceInformation;
+                struct _RPC_CLIENT_INTERFACE rpc_iface;
+                if (VMI_SUCCESS != vmi_read(vmi, &ctx, sizeof(struct _RPC_CLIENT_INTERFACE), &rpc_iface, &bytes_read) || bytes_read != sizeof(struct _RPC_CLIENT_INTERFACE))
+                    continue;
+
+                fmt_extra.push_back(std::make_pair("InterfaceId", rpc_iface.InterfaceId.SyntaxGuid.str()));
+                fmt_extra.push_back(std::make_pair("TransferSyntax", rpc_iface.TransferSyntax.SyntaxGuid.str()));
+            }
         }
     }
 
-    std::vector<std::pair<std::string, fmt::Qstr<std::string>>> fmt_extra{};
-    for (const auto &extra : extra_data) {
-        fmt_extra.push_back(std::make_pair(extra.first, fmt::Qstr(extra.second)));
-    }
-
-    fmt::print(plugin->m_output_format, "apimon", drakvuf, info,
+    fmt::print(plugin->m_output_format, "rpcmon", drakvuf, info,
         keyval("Event", fmt::Qstr("api_called")),
-        keyval("CLSID", clsid),
         keyval("CalledFrom", fmt::Xval(info->regs->rip)),
         keyval("ReturnValue", fmt::Xval(info->regs->rax)),
         keyval("Arguments", fmt_args),
@@ -201,7 +245,7 @@ static event_response_t usermode_hook_cb(drakvuf_t drakvuf, drakvuf_trap_info* i
 
     if (!success)
     {
-        PRINT_DEBUG("[APIMON-USER] Failed to read return address from the stack.\n");
+        PRINT_DEBUG("[RPCMON-USER] Failed to read return address from the stack.\n");
         return VMI_EVENT_RESPONSE_NONE;
     }
 
@@ -209,7 +253,7 @@ static event_response_t usermode_hook_cb(drakvuf_t drakvuf, drakvuf_trap_info* i
 
     if (!ret_target)
     {
-        PRINT_DEBUG("[APIMON-USER] Failed to allocate memory for return_hook_target_entry_t\n");
+        PRINT_DEBUG("[RPCMON-USER] Failed to allocate memory for return_hook_target_entry_t\n");
         return VMI_EVENT_RESPONSE_NONE;
     }
 
@@ -217,7 +261,7 @@ static event_response_t usermode_hook_cb(drakvuf_t drakvuf, drakvuf_trap_info* i
 
     if (!trap)
     {
-        PRINT_DEBUG("[APIMON-USER] Failed to allocate memory for drakvuf_trap_t\n");
+        PRINT_DEBUG("[RPCMON-USER] Failed to allocate memory for drakvuf_trap_t\n");
         delete ret_target;
         return VMI_EVENT_RESPONSE_NONE;
     }
@@ -252,7 +296,7 @@ static event_response_t usermode_hook_cb(drakvuf_t drakvuf, drakvuf_trap_info* i
     }
     else
     {
-        PRINT_DEBUG("[APIMON-USER] Failed to add trap :(\n");
+        PRINT_DEBUG("[RPCMON-USER] Failed to add trap :(\n");
         delete trap;
         delete ret_target;
     }
@@ -260,7 +304,7 @@ static event_response_t usermode_hook_cb(drakvuf_t drakvuf, drakvuf_trap_info* i
     return VMI_EVENT_RESPONSE_NONE;
 }
 
-static void print_addresses(drakvuf_t drakvuf, apimon *plugin, const dll_view_t *dll, const std::vector<hook_target_view_t>& targets)
+static void print_addresses(drakvuf_t drakvuf, rpcmon *plugin, const dll_view_t *dll, const std::vector<hook_target_view_t>& targets)
 {
     unicode_string_t* dll_name;
     json_object *j_root;
@@ -287,7 +331,7 @@ static void print_addresses(drakvuf_t drakvuf, apimon *plugin, const dll_view_t 
             json_object_object_add(j_rvas, target.target_name.c_str(), json_object_new_int(target.offset));
     }
 
-    json_object_object_add(j_root, "Plugin", json_object_new_string("apimon"));
+    json_object_object_add(j_root, "Plugin", json_object_new_string("rpcmon"));
     json_object_object_add(j_root, "Event", json_object_new_string("dll_loaded"));
     json_object_object_add(j_root, "Rva", j_rvas);
     json_object_object_add(j_root, "DllBase", json_object_new_string_fmt("0x%lx", dll->real_dll_base));
@@ -305,7 +349,7 @@ out:
 
 static void on_dll_discovered(drakvuf_t drakvuf, const dll_view_t* dll, void* extra)
 {
-    apimon* plugin = (apimon*)extra;
+    rpcmon* plugin = (rpcmon*)extra;
 
     vmi_lock_guard lg(drakvuf);
     unicode_string_t* dll_name = drakvuf_read_unicode_va(lg.vmi, dll->mmvad.file_name_ptr, 0);
@@ -327,39 +371,35 @@ static void on_dll_discovered(drakvuf_t drakvuf, const dll_view_t* dll, void* ex
 
 static void on_dll_hooked(drakvuf_t drakvuf, const dll_view_t* dll, const std::vector<hook_target_view_t>& targets, void* extra)
 {
-    apimon* plugin = (apimon*)extra;
+    rpcmon* plugin = (rpcmon*)extra;
     print_addresses(drakvuf, plugin, dll, targets);
-    PRINT_DEBUG("[APIMON] DLL hooked - done\n");
+    PRINT_DEBUG("[RPCMON] DLL hooked - done\n");
 }
 
-apimon::apimon(drakvuf_t drakvuf, const apimon_config* c, output_format_t output)
+rpcmon::rpcmon(drakvuf_t drakvuf, output_format_t output)
     : pluginex(drakvuf, output)
 {
-    try
-    {
-        drakvuf_load_dll_hook_config(drakvuf, c->dll_hooks_list, c->print_no_addr, &this->wanted_hooks);
-    }
-    catch (int e)
-    {
-        fprintf(stderr, "Malformed DLL hook configuration for APIMON plugin\n");
-        throw -1;
-    }
+    std::vector< std::unique_ptr < ArgumentPrinter > > arg_vec;
 
-    auto it = std::begin(this->wanted_hooks);
+    arg_vec.push_back(std::unique_ptr < ArgumentPrinter>(new ArgumentPrinter("pStubDescriptor", false)));
+    arg_vec.push_back(std::unique_ptr < ArgumentPrinter>(new ArgumentPrinter("pFormat", false)));
+    wanted_hooks.emplace_back("rpcrt4.dll", "NdrAsyncClientCall", "log", std::move(arg_vec));
 
-    while (it != std::end(this->wanted_hooks))
-    {
-        if ((*it).log_strategy != "log" && (*it).log_strategy != "log+stack")
-            it = this->wanted_hooks.erase(it);
-        else
-            ++it;
-    }
+    arg_vec.push_back(std::unique_ptr < ArgumentPrinter>(new ArgumentPrinter("pStubDescriptor", false)));
+    arg_vec.push_back(std::unique_ptr < ArgumentPrinter>(new ArgumentPrinter("pFormat", false)));
+    wanted_hooks.emplace_back("rpcrt4.dll", "NdrAsyncClientCall2", "log", std::move(arg_vec));
 
-    if (this->wanted_hooks.empty())
-    {
-        // don't load this plugin if there is nothing to do
-        return;
-    }
+    arg_vec.push_back(std::unique_ptr < ArgumentPrinter>(new ArgumentPrinter("pStubDescriptor", false)));
+    arg_vec.push_back(std::unique_ptr < ArgumentPrinter>(new ArgumentPrinter("pFormat", false)));
+    wanted_hooks.emplace_back("rpcrt4.dll", "NdrClientCall", "log", std::move(arg_vec));
+
+    arg_vec.push_back(std::unique_ptr < ArgumentPrinter>(new ArgumentPrinter("pStubDescriptor", false)));
+    arg_vec.push_back(std::unique_ptr < ArgumentPrinter>(new ArgumentPrinter("pFormat", false)));
+    wanted_hooks.emplace_back("rpcrt4.dll", "NdrClientCall2", "log", std::move(arg_vec));
+
+    arg_vec.push_back(std::unique_ptr < ArgumentPrinter>(new ArgumentPrinter("pStubDescriptor", false)));
+    arg_vec.push_back(std::unique_ptr < ArgumentPrinter>(new ArgumentPrinter("pFormat", false)));
+    wanted_hooks.emplace_back("rpcrt4.dll", "NdrClientCall4", "log", std::move(arg_vec));
 
     usermode_cb_registration reg = {
             .pre_cb = on_dll_discovered,
@@ -375,15 +415,15 @@ apimon::apimon(drakvuf_t drakvuf, const apimon_config* c, output_format_t output
             break;
         case USERMODE_ARCH_UNSUPPORTED:
         case USERMODE_OS_UNSUPPORTED:
-            PRINT_DEBUG("[APIMON] Usermode hooking is not supported on this architecture/bitness/os version, these features will be disabled\n");
+            PRINT_DEBUG("[RPCMON] Usermode hooking is not supported on this architecture/bitness/os version, these features will be disabled\n");
             break;
         default:
-            PRINT_DEBUG("[APIMON] Failed to subscribe to libusermode\n");
+            PRINT_DEBUG("[RPCMON] Failed to subscribe to libusermode\n");
             throw -1;
     }
 }
 
-apimon::~apimon()
+rpcmon::~rpcmon()
 {
 
 }

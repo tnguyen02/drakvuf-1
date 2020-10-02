@@ -119,6 +119,7 @@ struct memdump_config
     const char* dll_hooks_list;
     const char* clr_profile;
     const char* mscorwks_profile;
+    const bool print_no_addr;
 };
 
 class memdump: public pluginex
@@ -129,6 +130,9 @@ public:
     const char* memdump_dir;
     addr_t dll_base_rva;
     addr_t dll_base_wow_rva;
+    size_t kthread_process_rva;
+    size_t wow64context_eip_rva;
+    size_t wow64context_eax_rva;
 
     std::vector<plugin_target_config_entry_t> wanted_hooks;
 

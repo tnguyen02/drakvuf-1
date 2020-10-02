@@ -296,7 +296,7 @@ static bool make_trap(vmi_instance_t vmi, drakvuf_t drakvuf, drakvuf_trap_info *
 
 fail:
     PRINT_DEBUG("[USERHOOK] Failed to add trap :(\n");
-    delete trap;
+    g_slice_free(drakvuf_trap_t, trap);
     return false;
 }
 
@@ -823,14 +823,14 @@ usermode_reg_status_t userhook::init(drakvuf_t drakvuf)
     return USERMODE_REGISTER_SUCCESS;
 }
 
-void userhook::request_usermode_hook(drakvuf_t drakvuf, const dll_view_t* dll, target_hook_type type, const char* func_name, addr_t offset, callback_t callback, const std::vector< std::unique_ptr < ArgumentPrinter > > &argument_printers, void* extra)
+void userhook::request_usermode_hook(drakvuf_t drakvuf, const dll_view_t* dll, const plugin_target_config_entry_t* target, callback_t callback, void* extra)
 {
     dll_t* p_dll = (dll_t*)const_cast<dll_view_t*>(dll);
 
-    if (type == HOOK_BY_NAME)
-        p_dll->targets.emplace_back(func_name, callback, argument_printers, extra);
+    if (target->type == HOOK_BY_NAME)
+        p_dll->targets.emplace_back(target->function_name, target->clsid, callback, target->argument_printers, extra);
     else // HOOK_BY_OFFSET
-        p_dll->targets.emplace_back(func_name, offset, callback, argument_printers, extra);
+        p_dll->targets.emplace_back(target->function_name, target->clsid, target->offset, callback, target->argument_printers, extra);
 }
 
 void userhook::register_plugin(drakvuf_t drakvuf, usermode_cb_registration reg)
@@ -874,29 +874,29 @@ usermode_reg_status_t drakvuf_register_usermode_callback(drakvuf_t drakvuf, user
     return USERMODE_REGISTER_SUCCESS;
 }
 
-bool drakvuf_request_usermode_hook(drakvuf_t drakvuf, const dll_view_t* dll, target_hook_type type, const char* func_name, addr_t offset, callback_t callback, const std::vector < std::unique_ptr < ArgumentPrinter > > &argument_printers, void* extra)
+bool drakvuf_request_usermode_hook(drakvuf_t drakvuf, const dll_view_t* dll, const plugin_target_config_entry_t* target, callback_t callback, void* extra)
 {
     if (!instance || !instance->initialized) {
         return false;
     }
 
-    instance->request_usermode_hook(drakvuf, dll, type, func_name, offset, callback, argument_printers, extra);
+    instance->request_usermode_hook(drakvuf, dll, target, callback, extra);
     return true;
 }
 
-void drakvuf_load_dll_hook_config(drakvuf_t drakvuf, const char* dll_hooks_list_path, std::vector<plugin_target_config_entry_t>* wanted_hooks)
+void drakvuf_load_dll_hook_config(drakvuf_t drakvuf, const char* dll_hooks_list_path, const bool print_no_addr, std::vector<plugin_target_config_entry_t>* wanted_hooks)
 {
     if (!dll_hooks_list_path)
     {
         // if the DLL hook list was not provided, we provide some simple defaults
         std::vector< std::unique_ptr < ArgumentPrinter > > arg_vec1;
-        arg_vec1.push_back(std::unique_ptr < ArgumentPrinter>(new ArgumentPrinter()));
-        arg_vec1.push_back(std::unique_ptr < ArgumentPrinter>(new ArgumentPrinter()));
+        arg_vec1.push_back(std::unique_ptr < ArgumentPrinter>(new ArgumentPrinter("wVersionRequired", print_no_addr)));
+        arg_vec1.push_back(std::unique_ptr < ArgumentPrinter>(new ArgumentPrinter("lpWSAData", print_no_addr)));
         wanted_hooks->emplace_back("ws2_32.dll", "WSAStartup", "log+stack", std::move(arg_vec1));
 
         std::vector< std::unique_ptr < ArgumentPrinter > > arg_vec2;
-        arg_vec2.push_back(std::unique_ptr < ArgumentPrinter>(new ArgumentPrinter()));
-        arg_vec2.push_back(std::unique_ptr < ArgumentPrinter>(new ArgumentPrinter()));
+        arg_vec2.push_back(std::unique_ptr < ArgumentPrinter>(new ArgumentPrinter("ExitCode", print_no_addr)));
+        arg_vec2.push_back(std::unique_ptr < ArgumentPrinter>(new ArgumentPrinter("Unknown", print_no_addr)));
         wanted_hooks->emplace_back("ntdll.dll", "RtlExitUserProcess", "log+stack", std::move(arg_vec2));
         return;
     }
@@ -919,7 +919,6 @@ void drakvuf_load_dll_hook_config(drakvuf_t drakvuf, const char* dll_hooks_list_
         wanted_hooks->push_back(plugin_target_config_entry_t());
         plugin_target_config_entry_t &e = wanted_hooks->back();
 
-        std::string arg_type;
         if (!std::getline(ss, e.dll_name, ',') || e.dll_name.empty())
             throw -1;
 
@@ -929,8 +928,22 @@ void drakvuf_load_dll_hook_config(drakvuf_t drakvuf, const char* dll_hooks_list_
         e.type = HOOK_BY_NAME;
 
         std::string log_strategy_or_offset;
-        if (!std::getline(ss, log_strategy_or_offset, ','))
+        std::string token;
+        if (!std::getline(ss, token, ','))
+        {
             throw -1;
+        }
+
+        if (token == "clsid")
+        {
+            if (!std::getline(ss, e.clsid, ',') || e.clsid.empty())
+                throw -1;
+
+            if (!std::getline(ss, log_strategy_or_offset, ','))
+                throw -1;
+        }
+        else
+            log_strategy_or_offset = token;
 
         if (log_strategy_or_offset == "log" || log_strategy_or_offset == "log+stack" || log_strategy_or_offset == "stack")
         {
@@ -948,24 +961,54 @@ void drakvuf_load_dll_hook_config(drakvuf_t drakvuf, const char* dll_hooks_list_
                 throw -1;
         }
 
-        while (std::getline(ss, arg_type, ',') && !arg_type.empty())
+        std::string arg;
+        size_t arg_idx = 0;
+        while (std::getline(ss, arg, ',') && !arg.empty())
         {
-            if (arg_type == "lpcstr" || arg_type == "lpctstr")
+            auto pos = arg.find_first_of(':');
+            std::string arg_name;
+            std::string arg_type;
+            if (pos == std::string::npos)
             {
-                e.argument_printers.push_back(std::unique_ptr< ArgumentPrinter>(new AsciiPrinter()));
-            }
-            else if (arg_type == "lpcwstr" || arg_type == "lpwstr")
-            {
-                e.argument_printers.push_back(std::unique_ptr< ArgumentPrinter>(new WideStringPrinter()));
-            }
-            else if (arg_type == "punicode_string")
-            {
-                e.argument_printers.push_back(std::unique_ptr< ArgumentPrinter>(new UnicodePrinter()));
+                arg_name = std::string("Arg") + std::to_string(arg_idx);
+                arg_type = arg;
             }
             else
             {
-                e.argument_printers.push_back(std::unique_ptr< ArgumentPrinter>(new ArgumentPrinter()));
+                arg_name = arg.substr(0, pos);
+                arg_type = arg.substr(pos + 1);
             }
+
+            if (arg_type == "lpcstr" || arg_type == "lpctstr")
+            {
+                e.argument_printers.push_back(std::unique_ptr< ArgumentPrinter>(new AsciiPrinter(arg_name, print_no_addr)));
+            }
+            else if (arg_type == "lpcwstr" || arg_type == "lpwstr" || arg_type == "bstr")
+            {
+                e.argument_printers.push_back(std::unique_ptr< ArgumentPrinter>(new WideStringPrinter(arg_name, print_no_addr)));
+            }
+            else if (arg_type == "punicode_string")
+            {
+                e.argument_printers.push_back(std::unique_ptr< ArgumentPrinter>(new UnicodePrinter(arg_name, print_no_addr)));
+            }
+            else if (arg_type == "pulong")
+            {
+                e.argument_printers.push_back(std::unique_ptr< ArgumentPrinter>(new UlongPrinter(arg_name, print_no_addr)));
+            }
+            else if (arg_type == "lpvoid*")
+            {
+                e.argument_printers.push_back(std::unique_ptr< ArgumentPrinter>(new PointerToPointerPrinter(arg_name, print_no_addr)));
+            }
+            else if (arg_type == "refclsid" || arg_type == "refiid")
+            {
+                e.argument_printers.push_back(std::unique_ptr< ArgumentPrinter>(new GuidPrinter(arg_name, print_no_addr)));
+            }
+            else
+            {
+                e.argument_printers.push_back(std::unique_ptr< ArgumentPrinter>(new ArgumentPrinter(arg_name, print_no_addr)));
+            }
+
+            ++arg_idx;
         }
     }
 }

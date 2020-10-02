@@ -146,6 +146,7 @@ typedef enum
     FS_INFORMATION_CLASS,
     HANDLE,
     HINSTANCE,
+    HWND,
     HHOOK,
     HOOKPROC,
     INT,
@@ -161,6 +162,7 @@ typedef enum
     LANGID,
     LCID,
     LONG,
+    LPARAM,
     LPGUID,
     MEMORY_INFORMATION_CLASS,
     MEMORY_RESERVE_TYPE,
@@ -251,6 +253,7 @@ typedef enum
     SECTION_INHERIT,
     SECURITY_INFORMATION,
     SEMAPHORE_INFORMATION_CLASS,
+    SHORT,
     SHUTDOWN_ACTION,
     SIZE_T,
     SYSDBG_COMMAND,
@@ -264,6 +267,7 @@ typedef enum
     TOKEN_TYPE,
     TRANSACTIONMANAGER_INFORMATION_CLASS,
     TRANSACTION_INFORMATION_CLASS,
+    UINT,
     ULONG,
     ULONG_PTR,
     USHORT,
@@ -272,7 +276,8 @@ typedef enum
     WAIT_TYPE,
     WIN32_PROTECTION_MASK,
     WINAPI,
-    WORKERFACTORYINFOCLASS
+    WORKERFACTORYINFOCLASS,
+    WPARAM
 } type_t;
 
 static const char* type_names[]
@@ -296,6 +301,7 @@ static const char* type_names[]
     [FS_INFORMATION_CLASS] = "FS_INFORMATION_CLASS",
     [HANDLE] = "HANDLE",
     [HINSTANCE] = "HINSTANCE",
+    [HWND] = "HWND",
     [HHOOK] = "HHOOK",
     [HOOKPROC] = "HOOKPROC",
     [INT] = "INT",
@@ -311,6 +317,7 @@ static const char* type_names[]
     [LANGID] = "LANGID",
     [LCID] = "LCID",
     [LONG] = "LONG",
+    [LPARAM] = "LPARAM",
     [LPGUID] = "LPGUID",
     [MEMORY_INFORMATION_CLASS] = "MEMORY_INFORMATION_CLASS",
     [MEMORY_RESERVE_TYPE] = "MEMORY_RESERVE_TYPE",
@@ -401,6 +408,7 @@ static const char* type_names[]
     [SECTION_INHERIT] = "SECTION_INHERIT",
     [SECURITY_INFORMATION] = "SECURITY_INFORMATION",
     [SEMAPHORE_INFORMATION_CLASS] = "SEMAPHORE_INFORMATION_CLASS",
+    [SHORT] = "SHORT",
     [SHUTDOWN_ACTION] = "SHUTDOWN_ACTION",
     [SIZE_T] = "SIZE_T",
     [SYSDBG_COMMAND] = "SYSDBG_COMMAND",
@@ -414,6 +422,7 @@ static const char* type_names[]
     [TOKEN_TYPE] = "TOKEN_TYPE",
     [TRANSACTIONMANAGER_INFORMATION_CLASS] = "TRANSACTIONMANAGER_INFORMATION_CLASS",
     [TRANSACTION_INFORMATION_CLASS] = "TRANSACTION_INFORMATION_CLASS",
+    [UINT] = "UINT",
     [ULONG] = "ULONG",
     [ULONG_PTR] = "ULONG_PTR",
     [USHORT] = "USHORT",
@@ -422,7 +431,8 @@ static const char* type_names[]
     [WAIT_TYPE] = "WAIT_TYPE",
     [WIN32_PROTECTION_MASK] = "WIN32_PROTECTION_MASK",
     [WINAPI] = "WINAPI",
-    [WORKERFACTORYINFOCLASS] = "WORKERFACTORYINFOCLASS"
+    [WORKERFACTORYINFOCLASS] = "WORKERFACTORYINFOCLASS",
+    [WPARAM] = "WPARAM"
 };
 
 typedef struct
@@ -449,6 +459,7 @@ struct wrapper
     struct wrapper *w;
     uint16_t num;
     addr_t tid;
+    addr_t stack_fingerprint;
 };
 
 #define SYSCALL(_name, _ret, _num_args, ...)                     \
@@ -460,13 +471,11 @@ struct wrapper
      .args = (const arg_t*)&_name ## _arg                        \
    }
 
-void print_header(output_format_t format, drakvuf_t drakvuf, os_t os,
-                  bool syscall, const drakvuf_trap_info_t* info,
-                  int nr, const char *module, const syscall_t *sc,
-                  uint64_t ret, const char *extra_info);
-void print_nargs(output_format_t format, uint32_t nargs);
-void print_args(syscalls* s, drakvuf_t drakvuf, drakvuf_trap_info_t* info, const syscall_t* sc, void* args_data);
-void print_footer(output_format_t format, uint32_t nargs, bool syscall);
+void print_syscall(syscalls* s, drakvuf_t drakvuf, os_t os,
+                   bool syscall, drakvuf_trap_info_t* info,
+                   int nr, std::string module, const syscall_t *sc,
+                   const std::vector<uint64_t>& args,
+                   uint64_t ret, const char *extra_info);
 void free_trap(gpointer p);
 
 #endif // commoncsproto_h

@@ -156,7 +156,7 @@ void drakvuf_close(drakvuf_t drakvuf, const bool pause)
     g_free(drakvuf);
 }
 
-bool drakvuf_init(drakvuf_t* drakvuf, const char* domain, const char* json_kernel_path, const char* json_wow_path, bool _verbose, bool libvmi_conf, addr_t kpgd)
+bool drakvuf_init(drakvuf_t* drakvuf, const char* domain, const char* json_kernel_path, const char* json_wow_path, bool _verbose, bool libvmi_conf, addr_t kpgd, bool fast_singlestep)
 {
 
     if ( !domain || !json_kernel_path )
@@ -196,7 +196,7 @@ bool drakvuf_init(drakvuf_t* drakvuf, const char* domain, const char* json_kerne
 
     drakvuf_pause(*drakvuf);
 
-    if (!init_vmi(*drakvuf, libvmi_conf))
+    if (!init_vmi(*drakvuf, libvmi_conf, fast_singlestep))
         goto err;
 
     switch ((*drakvuf)->os)
@@ -349,6 +349,12 @@ bool inject_trap_reg(drakvuf_t drakvuf, drakvuf_trap_t* trap)
     return 0;
 }
 
+bool inject_trap_catchall_breakpoint(drakvuf_t drakvuf, drakvuf_trap_t* trap)
+{
+    drakvuf->catchall_breakpoint = g_slist_prepend(drakvuf->catchall_breakpoint, trap);
+    return 1;
+};
+
 bool inject_trap_debug(drakvuf_t drakvuf, drakvuf_trap_t* trap)
 {
     if ( !drakvuf->debug && !control_debug_trap(drakvuf, 1) )
@@ -399,6 +405,9 @@ bool drakvuf_add_trap(drakvuf_t drakvuf, drakvuf_trap_t* trap)
             break;
         case CPUID:
             ret = inject_trap_cpuid(drakvuf, trap);
+            break;
+        case CATCHALL_BREAKPOINT:
+            ret = inject_trap_catchall_breakpoint(drakvuf, trap);
             break;
         case __INVALID_TRAP_TYPE: /* fall-through */
         default:
@@ -839,4 +848,77 @@ int drakvuf_event_fd_add(drakvuf_t drakvuf, int fd, event_cb_t event_cb, void* d
     PRINT_DEBUG("regenerating event_fds and fd_info_lookup...\n");
     drakvuf_event_fd_generate(drakvuf);
     return 1;
+}
+
+bool drakvuf_set_vcpu_gprs(drakvuf_t drakvuf, unsigned int vcpu, registers_t* regs)
+{
+    vcpu_guest_context_any_t ctx;
+
+    if ( !xen_get_vcpu_ctx(drakvuf->xen, drakvuf->domID, vcpu, &ctx) )
+        return false;
+
+    // HVM guests are always treated as x64 by Xen
+    ctx.x64.user_regs.rip = regs->x86.rip;
+    ctx.x64.user_regs.rax = regs->x86.rax;
+    ctx.x64.user_regs.rbx = regs->x86.rbx;
+    ctx.x64.user_regs.rcx = regs->x86.rcx;
+    ctx.x64.user_regs.rdx = regs->x86.rdx;
+    ctx.x64.user_regs.rbp = regs->x86.rbp;
+    ctx.x64.user_regs.rsp = regs->x86.rsp;
+    ctx.x64.user_regs.r8 = regs->x86.r8;
+    ctx.x64.user_regs.r9 = regs->x86.r9;
+    ctx.x64.user_regs.r10 = regs->x86.r10;
+    ctx.x64.user_regs.r11 = regs->x86.r11;
+    ctx.x64.user_regs.r12 = regs->x86.r12;
+    ctx.x64.user_regs.r13 = regs->x86.r13;
+    ctx.x64.user_regs.r14 = regs->x86.r14;
+    ctx.x64.user_regs.r15 = regs->x86.r15;
+
+    return xen_set_vcpu_ctx(drakvuf->xen, drakvuf->domID, vcpu, &ctx);
+}
+
+static bool is_valid_vcpu(drakvuf_t drakvuf, unsigned int vcpu)
+{
+    // VMs with more than MAX_DRAKVUF_VCPU vCPUs are not
+    // supported for usage with IPT, this limit is DRAKVUF specific
+    return vcpu < MAX_DRAKVUF_VCPU && drakvuf->vcpus > vcpu;
+}
+
+bool drakvuf_enable_ipt(drakvuf_t drakvuf, unsigned int vcpu, uint8_t** buf, uint64_t* size)
+{
+    if ( !is_valid_vcpu(drakvuf, vcpu) )
+        return false;
+
+    if ( !xen_enable_ipt(drakvuf->xen, drakvuf->domID, vcpu, &drakvuf->ipt_state[vcpu]) )
+        return false;
+
+    *buf = drakvuf->ipt_state[vcpu].buf;
+    *size = drakvuf->ipt_state[vcpu].size;
+
+    return true;
+}
+
+bool drakvuf_get_ipt_offset(drakvuf_t drakvuf, unsigned int vcpu, uint64_t* offset, uint64_t* last_offset)
+{
+    if ( !is_valid_vcpu(drakvuf, vcpu) )
+        return false;
+
+    if ( !xen_get_ipt_offset(drakvuf->xen, drakvuf->domID, vcpu, &drakvuf->ipt_state[vcpu]) )
+        return false;
+
+    *offset = drakvuf->ipt_state[vcpu].offset;
+    *last_offset = drakvuf->ipt_state[vcpu].last_offset;
+
+    return true;
+}
+
+bool drakvuf_disable_ipt(drakvuf_t drakvuf, unsigned int vcpu)
+{
+    if ( !is_valid_vcpu(drakvuf, vcpu) )
+        return false;
+
+    if ( !xen_disable_ipt(drakvuf->xen, drakvuf->domID, vcpu, &drakvuf->ipt_state[vcpu]) )
+        return false;
+
+    return true;
 }

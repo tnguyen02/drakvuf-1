@@ -102,112 +102,42 @@
  *                                                                         *
  ***************************************************************************/
 
-#include <errno.h>
-#include <limits.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <signal.h>
-#include <unistd.h>
+#ifndef FILETRACER_WIN_H
+#define FILETRACER_WIN_H
 
-#include <libvmi/libvmi.h>
-#include <librepl/librepl.h>
-#include <libdrakvuf/libdrakvuf.h>
+#include "plugins/private.h"
+#include "plugins/plugins.h"
 
-static drakvuf_t drakvuf;
-
-static void close_handler(int sig)
+class win_filetracer
 {
-    drakvuf_interrupt(drakvuf, sig);
-}
+public:
+    output_format_t format;
+    size_t* offsets;
+    GSList* traps_to_free = nullptr;
 
-static inline void print_help(void)
-{
-    fprintf(stderr, "Required input:\n"
-            "\t -r <path to json>         The OS kernel's JSON\n"
-            "\t -d <domain ID or name>    The domain's ID or name\n"
-#ifdef DRAKVUF_DEBUG
-            "\t -v                        Turn on verbose (debug) output\n"
-#endif
-            "\t -l                        Use libvmi.conf\n"
-            "\t -k <kpgd value>           Use provided KPGD value for faster and more robust startup (advanced)\n"
-           );
-}
+    addr_t newfile_name_offset;
+    addr_t newfile_name_length_offset;
+    addr_t newfile_root_offset;
+    addr_t basic_creation_offset;
+    addr_t basic_last_access_offset;
+    addr_t basic_last_write_offset;
+    addr_t basic_change_time_offset;
+    addr_t basic_attributes_offset;
 
-int main(int argc, char** argv)
-{
-    int return_code = 0;
-    char c;
-    char* json_kernel_path = NULL;
-    char* domain = NULL;
-    bool libvmi_conf = false;
-    bool verbose = 0;
-    addr_t kpgd = 0;
-
-    if (argc < 4)
+    drakvuf_trap_t trap[7] =
     {
-        print_help();
-        return 1;
-    }
-
-    while ((c = getopt (argc, argv, "r:d:i:I:e:m:B:P:f:k:vlg")) != -1)
-        switch (c)
-        {
-            case 'r':
-                json_kernel_path = optarg;
-                break;
-            case 'd':
-                domain = optarg;
-                break;
-#ifdef DRAKVUF_DEBUG
-            case 'v':
-                verbose = 1;
-                break;
-#endif
-            case 'l':
-                libvmi_conf = true;
-                break;
-            case 'k':
-                kpgd = strtoull(optarg, NULL, 0);
-                break;
-            default:
-                fprintf(stderr, "Unrecognized option: %c\n", c);
-                return return_code;
+        [0 ... 6] = {
+            .breakpoint.lookup_type = LOOKUP_PID,
+            .breakpoint.pid = 4,
+            .breakpoint.addr_type = ADDR_RVA,
+            .breakpoint.module = "ntoskrnl.exe",
+            .type = BREAKPOINT,
+            .data = (void*)this
         }
-
-    if ( !json_kernel_path || !domain )
-    {
-        print_help();
-        return 1;
-    }
-
-    /* for a clean exit */
-    struct sigaction act;
-    act.sa_handler = close_handler;
-    act.sa_flags = 0;
-    sigemptyset(&act.sa_mask);
-    sigaction(SIGHUP, &act, NULL);
-    sigaction(SIGTERM, &act, NULL);
-    sigaction(SIGINT, &act, NULL);
-    sigaction(SIGALRM, &act, NULL);
-
-    if (!drakvuf_init(&drakvuf, domain, json_kernel_path, NULL, verbose, libvmi_conf, kpgd, false))
-    {
-        fprintf(stderr, "Failed to initialize on domain %s\n", domain);
-        return 1;
-    }
-
-    drakvuf_trap_t inject_trap = {
-        .type = REGISTER,
-        .reg = CR3,
-        .cb = &repl_start,
-        .name = "repl_trap"
     };
 
-    if (!drakvuf_add_trap(drakvuf, &inject_trap))
-        throw -1;
+    win_filetracer(drakvuf_t drakvuf, output_format_t output);
+    ~win_filetracer();
+};
 
-    if (!drakvuf_is_interrupted(drakvuf))
-        drakvuf_loop(drakvuf);
-
-    return return_code;
-}
+#endif

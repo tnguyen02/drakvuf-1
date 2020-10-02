@@ -103,7 +103,11 @@
 #*************************************************************************#
 
 AC_PREREQ([2.60])
-AC_INIT([DRAKVUF], m4_join([], [0.7-git], m4_esyscmd_s([git log -1 --date=format:%Y%m%d%H%M%S --pretty=format:%cd]), [+], m4_esyscmd_s([git describe --always]), [-1]), [tamas@tklengyel.com], [], [https://drakvuf.com])
+AC_INIT([DRAKVUF],
+        m4_join([], [0.8-git],
+            m4_esyscmd_s([git log -1 --date=format:%Y%m%d%H%M%S --pretty=format:%cd]), [+], m4_esyscmd_s([git describe --always]), [-1]),
+        [tamas@tklengyel.com], [],
+        [https://drakvuf.com])
 AM_INIT_AUTOMAKE([1.10 no-define foreign subdir-objects])
 LT_INIT
 AC_CONFIG_HEADERS([config.h])
@@ -114,6 +118,13 @@ AC_PROG_CXX(clang++)
 AX_REQUIRE_DEFINED([AX_CXX_COMPILE_STDCXX])
 AX_CXX_COMPILE_STDCXX([17], [ext], [mandatory])
 CXXFLAGS="-std=gnu++17"
+
+######################################################
+
+AC_LANG_PUSH([C++])
+AC_COMPILE_IFELSE([AC_LANG_PROGRAM([], [[bool test[2] = { [1] = 1, [0] = 0 };]])], [],
+    [AC_ERROR(Your C++ compiler ($CXX) is not supported. Please use clang++ (clang-9 or clang-10)!)])
+AC_LANG_POP([C++])
 
 ######################################################
 
@@ -299,7 +310,7 @@ fi
 
 AC_ARG_ENABLE([plugin_librarymon],
   [AS_HELP_STRING([--disable-plugin-librarymon],
-    [Enable the windows kernel bugcheck watching plugin @<:@yes@:>@])],
+    [Enable the windows library monitor plugin @<:@yes@:>@])],
   [plugin_librarymon="$enableval"],
   [plugin_librarymon="yes"])
 AM_CONDITIONAL([PLUGIN_LIBRARYMON], [test x$plugin_librarymon = xyes])
@@ -319,9 +330,9 @@ fi
 
 AC_ARG_ENABLE([plugin_wmimon],
   [AS_HELP_STRING([--disable-plugin-wmimon],
-    [Enable the windows kernel bugcheck watching plugin @<:@yes@:>@])],
+    [Enable the WMI monitor plugin @<:@no@:>@])],
   [plugin_wmimon="$enableval"],
-  [plugin_wmimon="yes"])
+  [plugin_wmimon="no"])
 AM_CONDITIONAL([PLUGIN_WMIMON], [test x$plugin_wmimon = xyes])
 if test x$plugin_wmimon = xyes; then
   AC_DEFINE_UNQUOTED(ENABLE_PLUGIN_WMIMON, 1, "")
@@ -364,6 +375,16 @@ AC_ARG_ENABLE([plugin_xowmon],
 AM_CONDITIONAL([PLUGIN_XOWMON], [test x$plugin_xowmon = xyes])
 if test x$plugin_xowmon = xyes; then
   AC_DEFINE_UNQUOTED(ENABLE_PLUGIN_XOWMON, 1, "")
+fi
+
+AC_ARG_ENABLE([plugin_rpcmon],
+  [AS_HELP_STRING([--disable-plugin-rpcmon],
+    [Enable the RPC call tracing plugin @<:@yes@:>@])],
+  [plugin_rpcmon="$enableval"],
+  [plugin_rpcmon="yes"])
+AM_CONDITIONAL([PLUGIN_RPCMON], [test x$plugin_rpcmon = xyes])
+if test x$plugin_rpcmon = xyes; then
+  AC_DEFINE_UNQUOTED(ENABLE_PLUGIN_RPCMON, 1, "")
 fi
 
 #####################################################
@@ -410,6 +431,13 @@ AC_ARG_WITH([stdlib],
   [], [with_stdlib=system])
 AS_IF([test "x$with_stdlib" != "xsystem"],
   [CXXFLAGS="$CXXFLAGS -stdlib=$with_stdlib"])
+
+AC_ARG_ENABLE([ipt],
+  [AS_HELP_STRING([--enable-ipt],
+    [Enable Intel Processor Trace support (special Xen version required) @<:@no@:>@])],
+  [enable_ipt="$enableval"],
+  [enable_ipt="no"])
+AM_CONDITIONAL([ENABLE_IPT], [test x$enable_ipt = xyes])
 
 #####################################################
 # AUTOHARDEN START
@@ -559,23 +587,14 @@ PKG_CHECK_MODULES([VMI], [libvmi >= 0.11], [], [AC_ERROR([LibVMI not found])])
 PKG_CHECK_MODULES([JSONC], [json-c], [], [AC_ERROR([libjson-c not found])])
 AS_IF([test x$plugin_procdump == xyes],
     [PKG_CHECK_MODULES([ZLIB],[zlib], [], [AC_ERROR([zlib not found])])])
-
-AC_CHECK_LIB([xencall], [xencall_buffers_never_fault])
-AC_CHECK_LIB([xenforeignmemory], [xenforeignmemory_map_resource])
-
-#AC_CHECK_HEADER([xenstore.h])
-#AC_CHECK_LIB(xenstore, [xc_read, xs_transaction_start], [], [AC_ERROR([Xenstore not found!])])
-
-# Check for Xenctrl
-AC_CHECK_HEADERS([xenctrl.h], [], [AC_ERROR([XenCtrl missing! Did you install libxc yet?])])
-AC_CHECK_LIB([xenctrl], [xc_interface_open], [], [AC_ERROR([XenCtrl is unusable! Do you have libxc installed?])])
-
-AC_CHECK_HEADERS([libxl_utils.h], [], [AC_ERROR([Xenlight (libxl) headers are not usable])])
-AC_CHECK_LIB(xenlight, libxl_name_to_domid, [], [AC_ERROR([Xenlight does not have required features!])])
-
-AC_CHECK_LIB([xentoollog], [xtl_logger_destroy])
+PKG_CHECK_MODULES([LIBXC], [xencontrol], [], [AC_ERROR([libxc not found])])
+PKG_CHECK_MODULES([LIBXL], [xenlight], [], [AC_ERROR([libxl not found])])
+PKG_CHECK_MODULES([XENFMEM], [xenforeignmemory], [], [AC_ERROR([xenforeignmemory not found])])
+PKG_CHECK_MODULES([XENTOOLLOG], [xentoollog], [], [AC_ERROR([xentoollog not found])])
 
 if test x$repl = xyes; then
+  PKG_CHECK_MODULES([PYTHON3], [python3])
+  PKG_CHECK_MODULES([PYTHON3_EMBED], [python3-embed], [], [AC_MSG_NOTICE(python3-embed not found)])
   AC_PATH_PROG(PYTHON3, python3, nopython)
   AS_IF([test "$ac_cv_path_PYTHON3" = "nopython"],
     AC_MSG_ERROR([could not find python or python3]),
@@ -637,11 +656,14 @@ ClipboardMon: $plugin_clipboardmon
 WindowMon:    $plugin_windowmon
 LibraryMon:   $plugin_librarymon
 DKOMmon:      $plugin_dkommon
-WMIMon:       $plugin_wmimon
 MEMDump:      $plugin_memdump
 ProcDump:     $plugin_procdump
 APIMon:       $plugin_apimon
 XOWMon:       $plugin_xowmon
+RPCMon:       $plugin_rpcmon
+-------------------------------------------------------------------------------
+Deprecated Plugins
+WMIMon:       $plugin_wmimon
 -------------------------------------------------------------------------------
 REPL:         $repl
 -------------------------------------------------------------------------------])

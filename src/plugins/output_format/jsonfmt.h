@@ -142,7 +142,7 @@ public:
     template <class Tv = T>
     static bool print(std::ostream& os, const fmt::Xval<Tv>& data, char)
     {
-        os << data.value;
+        os << "\"0x" << std::hex << data.value << "\"" << std::dec;
         return true;
     }
 
@@ -293,6 +293,9 @@ private:
                 os << sep;
 
             bool printed_rest = DataPrinter<T>::print_data(os, sep, args...);
+            // Undo separator printing when rest wasn't printed
+            if (printed && !printed_rest)
+                fmt::unputc(os);
             printed = printed || printed_rest;
         }
         return printed;
@@ -407,15 +410,17 @@ inline auto get_common_data(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
     if (info->trap->name)
         method = fmt::Qstr(info->trap->name);
 
+    proc_data_t* proc_data = drakvuf_get_os_type(drakvuf) == VMI_OS_WINDOWS ? &info->attached_proc_data : &info->proc_data;
     return std::make_tuple(
-               keyval("Time", TimeVal{UNPACK_TIMEVAL(info->timestamp)}),
-               keyval("PID", fmt::Nval(info->attached_proc_data.pid)),
-               keyval("PPID", fmt::Nval(info->attached_proc_data.ppid)),
-               keyval("TID", fmt::Nval(info->attached_proc_data.tid)),
+               keyval("TimeStamp", TimeVal{UNPACK_TIMEVAL(info->timestamp)}),
+               keyval("PID", fmt::Nval(proc_data->pid)),
+               keyval("PPID", fmt::Nval(proc_data->ppid)),
+               keyval("TID", fmt::Nval(proc_data->tid)),
                keyval("UserName", fmt::Qstr(USERIDSTR(drakvuf))),
                keyval("UserId", fmt::Nval(info->proc_data.userid)),
-               keyval("ProcessName", fmt::Qstr(info->attached_proc_data.name)),
-               keyval("Method", method)
+               keyval("ProcessName", fmt::Qstr(proc_data->name)),
+               keyval("Method", method),
+               keyval("EventUID", fmt::Xval(info->event_uid))
            );
 }
 

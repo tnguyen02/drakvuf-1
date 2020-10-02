@@ -158,7 +158,8 @@ typedef enum trap_type
     MEMACCESS,
     REGISTER,
     DEBUG,
-    CPUID
+    CPUID,
+    CATCHALL_BREAKPOINT
 } trap_type_t;
 
 typedef enum memaccess_type
@@ -192,6 +193,7 @@ typedef struct drakvuf_trap_info
     addr_t trap_pa;
     x86_registers_t* regs;
     drakvuf_trap_t* trap;
+    uint64_t event_uid; /* Unique sequential event identifier */
     union
     {
         const cpuid_event_t* cpuid; /* For CPUID traps */
@@ -361,7 +363,8 @@ bool drakvuf_init (drakvuf_t* drakvuf,
                    const char* json_wow_profile,
                    const bool verbose,
                    const bool libvmi_conf,
-                   const addr_t kpgd) NOEXCEPT;
+                   const addr_t kpgd,
+                   const bool fast_singlestep) NOEXCEPT;
 void drakvuf_close (drakvuf_t drakvuf, const bool pause) NOEXCEPT;
 bool drakvuf_add_trap(drakvuf_t drakvuf,
                       drakvuf_trap_t* trap) NOEXCEPT;
@@ -601,6 +604,13 @@ addr_t drakvuf_get_function_argument(drakvuf_t drakvuf,
                                      int argument_number) NOEXCEPT;
 
 bool drakvuf_get_pid_from_handle(drakvuf_t drakvuf, drakvuf_trap_info_t* info, addr_t handle, vmi_pid_t* pid) NOEXCEPT;
+bool drakvuf_get_tid_from_handle(drakvuf_t drakvuf, drakvuf_trap_info_t* info, addr_t handle, uint32_t* tid) NOEXCEPT;
+
+bool drakvuf_set_vcpu_gprs(drakvuf_t drakvuf, unsigned int vcpu, registers_t *regs) NOEXCEPT;
+
+bool drakvuf_enable_ipt(drakvuf_t drakvuf, unsigned int vcpu, uint8_t** buf, uint64_t* size);
+bool drakvuf_get_ipt_offset(drakvuf_t drakvuf, unsigned int vcpu, uint64_t* offset, uint64_t* last_offset);
+bool drakvuf_disable_ipt(drakvuf_t drakvuf, unsigned int vcpu);
 
 /*---------------------------------------------------------
  * Event FD functions

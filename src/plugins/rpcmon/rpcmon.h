@@ -102,112 +102,24 @@
  *                                                                         *
  ***************************************************************************/
 
-#include <errno.h>
-#include <limits.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <signal.h>
-#include <unistd.h>
+#ifndef RPCMON_H
+#define RPCMON_H
 
-#include <libvmi/libvmi.h>
-#include <librepl/librepl.h>
-#include <libdrakvuf/libdrakvuf.h>
+#include <vector>
+#include <memory>
 
-static drakvuf_t drakvuf;
+#include <glib.h>
+#include <libusermode/userhook.hpp>
+#include "plugins/private.h"
+#include "plugins/plugins_ex.h"
 
-static void close_handler(int sig)
+class rpcmon: public pluginex
 {
-    drakvuf_interrupt(drakvuf, sig);
-}
+public:
+    std::vector<plugin_target_config_entry_t> wanted_hooks;
 
-static inline void print_help(void)
-{
-    fprintf(stderr, "Required input:\n"
-            "\t -r <path to json>         The OS kernel's JSON\n"
-            "\t -d <domain ID or name>    The domain's ID or name\n"
-#ifdef DRAKVUF_DEBUG
-            "\t -v                        Turn on verbose (debug) output\n"
+    rpcmon(drakvuf_t drakvuf, output_format_t output);
+    ~rpcmon();
+};
+
 #endif
-            "\t -l                        Use libvmi.conf\n"
-            "\t -k <kpgd value>           Use provided KPGD value for faster and more robust startup (advanced)\n"
-           );
-}
-
-int main(int argc, char** argv)
-{
-    int return_code = 0;
-    char c;
-    char* json_kernel_path = NULL;
-    char* domain = NULL;
-    bool libvmi_conf = false;
-    bool verbose = 0;
-    addr_t kpgd = 0;
-
-    if (argc < 4)
-    {
-        print_help();
-        return 1;
-    }
-
-    while ((c = getopt (argc, argv, "r:d:i:I:e:m:B:P:f:k:vlg")) != -1)
-        switch (c)
-        {
-            case 'r':
-                json_kernel_path = optarg;
-                break;
-            case 'd':
-                domain = optarg;
-                break;
-#ifdef DRAKVUF_DEBUG
-            case 'v':
-                verbose = 1;
-                break;
-#endif
-            case 'l':
-                libvmi_conf = true;
-                break;
-            case 'k':
-                kpgd = strtoull(optarg, NULL, 0);
-                break;
-            default:
-                fprintf(stderr, "Unrecognized option: %c\n", c);
-                return return_code;
-        }
-
-    if ( !json_kernel_path || !domain )
-    {
-        print_help();
-        return 1;
-    }
-
-    /* for a clean exit */
-    struct sigaction act;
-    act.sa_handler = close_handler;
-    act.sa_flags = 0;
-    sigemptyset(&act.sa_mask);
-    sigaction(SIGHUP, &act, NULL);
-    sigaction(SIGTERM, &act, NULL);
-    sigaction(SIGINT, &act, NULL);
-    sigaction(SIGALRM, &act, NULL);
-
-    if (!drakvuf_init(&drakvuf, domain, json_kernel_path, NULL, verbose, libvmi_conf, kpgd, false))
-    {
-        fprintf(stderr, "Failed to initialize on domain %s\n", domain);
-        return 1;
-    }
-
-    drakvuf_trap_t inject_trap = {
-        .type = REGISTER,
-        .reg = CR3,
-        .cb = &repl_start,
-        .name = "repl_trap"
-    };
-
-    if (!drakvuf_add_trap(drakvuf, &inject_trap))
-        throw -1;
-
-    if (!drakvuf_is_interrupted(drakvuf))
-        drakvuf_loop(drakvuf);
-
-    return return_code;
-}

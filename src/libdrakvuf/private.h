@@ -152,6 +152,12 @@ extern bool verbose;
  */
 #define VMI_FLUSH_RATE 100
 
+/*
+ * How many vCPUs are supported per single DomU
+ * this value could be increased if needed
+ */
+#define MAX_DRAKVUF_VCPU 16
+
 struct fd_info
 {
     int fd;
@@ -197,7 +203,7 @@ struct drakvuf
     vmi_event_t mem_event;
     vmi_event_t debug_event;
     vmi_event_t cpuid_event;
-    vmi_event_t* step_event[16];
+    vmi_event_t* step_event[MAX_DRAKVUF_VCPU];
 
     size_t* offsets;
     size_t* sizes;
@@ -238,13 +244,17 @@ struct drakvuf
     GHashTable* memaccess_lookup_trap; // key: trap pointer
     // val: struct memaccess
 
-    GSList* cr0, *cr3, *cr4, *debug, *cpuid;
+    GSList* cr0, *cr3, *cr4, *debug, *cpuid, *catchall_breakpoint;
 
     GSList* event_fd_info;     // the list of registered event FDs
     struct pollfd* event_fds;  // auto-generated pollfd for poll()
     int event_fd_cnt;          // auto-generated for poll()
     fd_info_t fd_info_lookup;  // auto-generated for fast drakvuf_loop lookups
     int poll_rc;
+
+    uint64_t event_counter;    // incremental unique trap event ID
+
+    ipt_state_t ipt_state[MAX_DRAKVUF_VCPU];
 };
 
 struct breakpoint
@@ -333,6 +343,7 @@ bool inject_trap_breakpoint(drakvuf_t drakvuf, drakvuf_trap_t* trap);
 bool inject_trap_reg(drakvuf_t drakvuf, drakvuf_trap_t* trap);
 bool inject_trap_debug(drakvuf_t drakvuf, drakvuf_trap_t* trap);
 bool inject_trap_cpuid(drakvuf_t drakvuf, drakvuf_trap_t* trap);
+bool inject_trap_catchall_breakpoint(drakvuf_t drakvuf, drakvuf_trap_t* trap);
 
 event_response_t post_mem_cb(vmi_instance_t vmi, vmi_event_t* event);
 event_response_t pre_mem_cb(vmi_instance_t vmi, vmi_event_t* event);

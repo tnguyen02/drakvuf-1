@@ -178,6 +178,9 @@ struct DataPrinter
     template <class Tv = T>
     static bool print(std::ostream& os, const fmt::Rstr<Tv>& data, char)
     {
+        if (data.value.empty())
+            return false;
+
         os << data.value;
         return true;
     }
@@ -218,14 +221,18 @@ struct DataPrinter
             "Unsupported KV printer key type");
 
         auto pos = os.tellp();
-        if (print_data(os, fmt::Rstr(data.first), 0))
+        auto is_print_data = true;
+        if (!is_iterable<Tv>::value)
         {
-            os << '=';
-            if (print_data(os, data.second, ';'))
-            {
-                return true;
-            }
+            if (print_data(os, fmt::Rstr(data.first), 0))
+                os << '=';
+            else
+                is_print_data = false;
         }
+
+        if (is_print_data && print_data(os, data.second, ','))
+            return true;
+
         os.seekp(pos);
         return false;
     }
@@ -251,6 +258,9 @@ struct DataPrinter<T, std::enable_if_t<is_iterable<T>::value, void>>
 {
     static bool print(std::ostream& os, const T& data, char sep)
     {
+        if (data.empty())
+            return false;
+
         bool printed = false;
         for (const auto& v : data)
         {
@@ -293,7 +303,7 @@ constexpr bool print_data(std::ostream& os, const T& data, const Ts& ... rest)
 
 /**/
 
-inline void print_common_data(std::ostream& os, drakvuf_trap_info_t* info)
+inline void print_common_data(std::ostream& os, drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 {
     if (info)
     {
@@ -301,12 +311,13 @@ inline void print_common_data(std::ostream& os, drakvuf_trap_info_t* info)
         if (info->trap->name)
             method = fmt::Rstr(info->trap->name);
 
+        proc_data_t* proc_data = drakvuf_get_os_type(drakvuf) == VMI_OS_WINDOWS ? &info->attached_proc_data : &info->proc_data;
         print_data(os,
                    keyval("Time", TimeVal{UNPACK_TIMEVAL(info->timestamp)}),
-                   keyval("PID", fmt::Nval(info->attached_proc_data.pid)),
-                   keyval("PPID", fmt::Nval(info->attached_proc_data.ppid)),
-                   keyval("TID", fmt::Nval(info->attached_proc_data.tid)),
-                   keyval("ProcessName", fmt::Qstr(info->attached_proc_data.name)),
+                   keyval("PID", fmt::Nval(proc_data->pid)),
+                   keyval("PPID", fmt::Nval(proc_data->ppid)),
+                   keyval("TID", fmt::Nval(proc_data->tid)),
+                   keyval("ProcessName", fmt::Qstr(proc_data->name)),
                    keyval("Method", method)
                   );
     }
@@ -320,7 +331,7 @@ void print(const char* plugin_name, drakvuf_t drakvuf, drakvuf_trap_info_t* info
     bool printed = false;
     if (info)
     {
-        print_common_data(fmt::cout, info);
+        print_common_data(fmt::cout, drakvuf, info);
         printed = true;
     }
 

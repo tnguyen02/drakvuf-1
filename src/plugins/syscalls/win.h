@@ -106,6 +106,7 @@
 #define SYSCALLS_WIN_H
 
 void setup_windows(drakvuf_t drakvuf, syscalls *s);
+char* win_extract_string(syscalls* s, drakvuf_t drakvuf, drakvuf_trap_info_t* info, const arg_t& arg, addr_t val);
 
 #define NUMBER_SERVICE_TABLES   2
 #define NTOS_SERVICE_INDEX      0
@@ -133,6 +134,19 @@ typedef struct sst_x86 {
     uint32_t ServiceLimit;
     uint32_t ArgumentTable;
 } __attribute__((packed)) system_service_table_x86;
+
+enum windows_structs_offsets
+{
+	_OBJECT_ATTRIBUTES_ObjectName,
+    _OBJECT_ATTRIBUTES_RootDirectory,
+	_WINDOWS_STRUCTS_OFFSETS_MAX
+};
+
+static const char* windows_structs_offsets_names[_WINDOWS_STRUCTS_OFFSETS_MAX][2] =
+{
+    [_OBJECT_ATTRIBUTES_ObjectName] = {"_OBJECT_ATTRIBUTES", "ObjectName"},
+    [_OBJECT_ATTRIBUTES_RootDirectory] = {"_OBJECT_ATTRIBUTES", "RootDirectory"},
+};
 
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wmissing-braces"
@@ -2406,6 +2420,37 @@ SYSCALL(NtUnmapViewOfSection, NTSTATUS, 2,
 		"ProcessHandle", "", DIR_IN, HANDLE,
 		"BaseAddress", "", DIR_IN, PVOID,
 );
+SYSCALL(NtUserCallTwoParam, NTSTATUS, 3,
+		"Param1", "", DIR_IN, DWORD,
+		"Param2", "", DIR_IN, DWORD,
+		"Routine", "", DIR_IN, DWORD);
+SYSCALL(NtUserGetAsyncKeyState, SHORT, 1,
+               "Key", "", DIR_IN, INT
+);
+SYSCALL(NtUserGetKeyState, SHORT, 1,
+               "VirtKey", "", DIR_IN, INT
+);
+SYSCALL(NtUserMessageCall, NTSTATUS, 7,
+		"hWnd", "", DIR_IN, HWND,
+		"Msg", "", DIR_IN, UINT,
+		"wParam", "", DIR_IN, WPARAM,
+		"lParam", "", DIR_IN, LPARAM,
+		"ResultInfo", "", DIR_IN, ULONG_PTR,
+		"dwType", "", DIR_IN, DWORD,
+		"Ansi", "", DIR_IN, BOOLEAN);
+SYSCALL(NtUserSetWindowLong, NTSTATUS, 4,
+		"hWnd", "", DIR_IN, HWND,
+		"nIndex", "", DIR_IN, INT,
+		"dwNewLong", "", DIR_IN, LONG,
+		"Ansi", "", DIR_IN, BOOLEAN);
+SYSCALL(NtUserSetWindowsHookEx, HHOOK, 6,
+		"Mod", "", DIR_IN, HINSTANCE,
+		"UnsafeModuleName", "", DIR_IN, PUNICODE_STRING,
+		"ThreadId", "", DIR_IN, DWORD,
+		"HookId", "", DIR_IN, INT,
+		"HookProc", "", DIR_IN, HOOKPROC,
+		"Ansi", "", DIR_IN, BOOLEAN,
+);
 SYSCALL(NtVdmControl, NTSTATUS, 2,
 		"Service", "", DIR_IN, VDMSERVICECLASS,
 		"ServiceData", "", DIR_INOUT, PVOID,
@@ -3453,7 +3498,6 @@ SYSCALL(NtUserCallMsgFilter, NTSTATUS, 0);
 SYSCALL(NtUserCallNextHookEx, NTSTATUS, 0);
 SYSCALL(NtUserCallNoParam, NTSTATUS, 0);
 SYSCALL(NtUserCallOneParam, NTSTATUS, 0);
-SYSCALL(NtUserCallTwoParam, NTSTATUS, 0);
 SYSCALL(NtUserCanBrokerForceForeground, NTSTATUS, 0);
 SYSCALL(NtUserChangeClipboardChain, NTSTATUS, 0);
 SYSCALL(NtUserChangeDisplaySettings, NTSTATUS, 0);
@@ -3572,7 +3616,6 @@ SYSCALL(NtUserGetActiveProcessesDpis, NTSTATUS, 0);
 SYSCALL(NtUserGetAltTabInfo, NTSTATUS, 0);
 SYSCALL(NtUserGetAncestor, NTSTATUS, 0);
 SYSCALL(NtUserGetAppImeLevel, NTSTATUS, 0);
-SYSCALL(NtUserGetAsyncKeyState, NTSTATUS, 0);
 SYSCALL(NtUserGetAtomName, NTSTATUS, 0);
 SYSCALL(NtUserGetAutoRotationState, NTSTATUS, 0);
 SYSCALL(NtUserGetCIMSSM, NTSTATUS, 0);
@@ -3629,7 +3672,6 @@ SYSCALL(NtUserGetInteractiveControlInfo, NTSTATUS, 0);
 SYSCALL(NtUserGetInteractiveCtrlSupportedWaveforms, NTSTATUS, 0);
 SYSCALL(NtUserGetInternalWindowPos, NTSTATUS, 0);
 SYSCALL(NtUserGetKeyNameText, NTSTATUS, 0);
-SYSCALL(NtUserGetKeyState, NTSTATUS, 0);
 SYSCALL(NtUserGetKeyboardLayout, NTSTATUS, 0);
 SYSCALL(NtUserGetKeyboardLayoutList, NTSTATUS, 0);
 SYSCALL(NtUserGetKeyboardLayoutName, NTSTATUS, 0);
@@ -3764,7 +3806,6 @@ SYSCALL(NtUserManageGestureHandlerWindow, NTSTATUS, 0);
 SYSCALL(NtUserMapPointsByVisualIdentifier, NTSTATUS, 0);
 SYSCALL(NtUserMapVirtualKeyEx, NTSTATUS, 0);
 SYSCALL(NtUserMenuItemFromPoint, NTSTATUS, 0);
-SYSCALL(NtUserMessageCall, NTSTATUS, 0);
 SYSCALL(NtUserMinMaximize, NTSTATUS, 0);
 SYSCALL(NtUserModifyUserStartupInfoFlags, NTSTATUS, 0);
 SYSCALL(NtUserModifyWindowTouchCapability, NTSTATUS, 0);
@@ -3934,7 +3975,6 @@ SYSCALL(NtUserSetWindowDisplayAffinity, NTSTATUS, 0);
 SYSCALL(NtUserSetWindowFNID, NTSTATUS, 0);
 SYSCALL(NtUserSetWindowFeedbackSetting, NTSTATUS, 0);
 SYSCALL(NtUserSetWindowGroup, NTSTATUS, 0);
-SYSCALL(NtUserSetWindowLong, NTSTATUS, 0);
 SYSCALL(NtUserSetWindowLongPtr, NTSTATUS, 0);
 SYSCALL(NtUserSetWindowPlacement, NTSTATUS, 0);
 SYSCALL(NtUserSetWindowPos, NTSTATUS, 0);
@@ -3944,14 +3984,6 @@ SYSCALL(NtUserSetWindowShowState, NTSTATUS, 0);
 SYSCALL(NtUserSetWindowStationUser, NTSTATUS, 0);
 SYSCALL(NtUserSetWindowWord, NTSTATUS, 0);
 SYSCALL(NtUserSetWindowsHookAW, NTSTATUS, 0);
-SYSCALL(NtUserSetWindowsHookEx, HHOOK, 6,
-		"Mod", "", DIR_IN, HINSTANCE,
-		"UnsafeModuleName", "", DIR_IN, PUNICODE_STRING,
-		"ThreadId", "", DIR_IN, DWORD,
-		"HookId", "", DIR_IN, INT,
-		"HookProc", "", DIR_IN, HOOKPROC,
-		"Ansi", "", DIR_IN, BOOLEAN,
-);
 SYSCALL(NtUserSfmDestroyLogicalSurfaceBinding, NTSTATUS, 0);
 SYSCALL(NtUserSfmDxBindSwapChain, NTSTATUS, 0);
 SYSCALL(NtUserSfmDxGetSwapChainStats, NTSTATUS, 0);

@@ -102,112 +102,92 @@
  *                                                                         *
  ***************************************************************************/
 
-#include <errno.h>
-#include <limits.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <signal.h>
-#include <unistd.h>
+#ifndef FILETRACER_LINUX_H
+#define FILETRACER_LINUX_H
 
-#include <libvmi/libvmi.h>
-#include <librepl/librepl.h>
-#include <libdrakvuf/libdrakvuf.h>
+#include "plugins/private.h"
+#include "plugins/plugins.h"
 
-static drakvuf_t drakvuf;
-
-static void close_handler(int sig)
+class linux_filetracer
 {
-    drakvuf_interrupt(drakvuf, sig);
-}
+public:
+    addr_t kaslr;
+    size_t* offsets;
+    output_format_t format;
+    GSList* traps_to_free;
 
-static inline void print_help(void)
-{
-    fprintf(stderr, "Required input:\n"
-            "\t -r <path to json>         The OS kernel's JSON\n"
-            "\t -d <domain ID or name>    The domain's ID or name\n"
-#ifdef DRAKVUF_DEBUG
-            "\t -v                        Turn on verbose (debug) output\n"
-#endif
-            "\t -l                        Use libvmi.conf\n"
-            "\t -k <kpgd value>           Use provided KPGD value for faster and more robust startup (advanced)\n"
-           );
-}
-
-int main(int argc, char** argv)
-{
-    int return_code = 0;
-    char c;
-    char* json_kernel_path = NULL;
-    char* domain = NULL;
-    bool libvmi_conf = false;
-    bool verbose = 0;
-    addr_t kpgd = 0;
-
-    if (argc < 4)
+    drakvuf_trap_t trap[22] =
     {
-        print_help();
-        return 1;
-    }
-
-    while ((c = getopt (argc, argv, "r:d:i:I:e:m:B:P:f:k:vlg")) != -1)
-        switch (c)
-        {
-            case 'r':
-                json_kernel_path = optarg;
-                break;
-            case 'd':
-                domain = optarg;
-                break;
-#ifdef DRAKVUF_DEBUG
-            case 'v':
-                verbose = 1;
-                break;
-#endif
-            case 'l':
-                libvmi_conf = true;
-                break;
-            case 'k':
-                kpgd = strtoull(optarg, NULL, 0);
-                break;
-            default:
-                fprintf(stderr, "Unrecognized option: %c\n", c);
-                return return_code;
+        [0 ... 21] = {
+            .breakpoint.lookup_type = LOOKUP_PID,
+            .breakpoint.pid = 0,
+            .breakpoint.addr_type = ADDR_VA,
+            .breakpoint.module = "linux",
+            .type = BREAKPOINT,
+            .data = (void*)this
         }
-
-    if ( !json_kernel_path || !domain )
-    {
-        print_help();
-        return 1;
-    }
-
-    /* for a clean exit */
-    struct sigaction act;
-    act.sa_handler = close_handler;
-    act.sa_flags = 0;
-    sigemptyset(&act.sa_mask);
-    sigaction(SIGHUP, &act, NULL);
-    sigaction(SIGTERM, &act, NULL);
-    sigaction(SIGINT, &act, NULL);
-    sigaction(SIGALRM, &act, NULL);
-
-    if (!drakvuf_init(&drakvuf, domain, json_kernel_path, NULL, verbose, libvmi_conf, kpgd, false))
-    {
-        fprintf(stderr, "Failed to initialize on domain %s\n", domain);
-        return 1;
-    }
-
-    drakvuf_trap_t inject_trap = {
-        .type = REGISTER,
-        .reg = CR3,
-        .cb = &repl_start,
-        .name = "repl_trap"
     };
 
-    if (!drakvuf_add_trap(drakvuf, &inject_trap))
-        throw -1;
+    linux_filetracer(drakvuf_t drakvuf, output_format_t output);
+    ~linux_filetracer();
+};
 
-    if (!drakvuf_is_interrupted(drakvuf))
-        drakvuf_loop(drakvuf);
+enum linux_pt_regs
+{
+    PT_REGS_R15,
+    PT_REGS_R14,
+    PT_REGS_R13,
+    PT_REGS_R12,
+    PT_REGS_RBP,
+    PT_REGS_RBX,
 
-    return return_code;
-}
+    PT_REGS_R11,
+    PT_REGS_R10,
+    PT_REGS_R9,
+    PT_REGS_R8,
+    PT_REGS_RAX,
+    PT_REGS_RCX,
+    PT_REGS_RDX,
+    PT_REGS_RSI,
+    PT_REGS_RDI,
+
+    PT_REGS_ORIG_RAX,
+
+    PT_REGS_RIP,
+    PT_REGS_CS,
+    PT_REGS_EFLAGS,
+    PT_REGS_RSP,
+    PT_REGS_SS,
+
+    __PT_REGS_MAX
+};
+
+static const char* linux_pt_regs_names[__PT_REGS_MAX] =
+{
+    [PT_REGS_R15] = "r15",
+    [PT_REGS_R14] = "r14",
+    [PT_REGS_R13] = "r13",
+    [PT_REGS_R12] = "r12",
+    [PT_REGS_RBP] = "bp",
+    [PT_REGS_RBX] = "bx",
+
+    [PT_REGS_R11] = "r11",
+    [PT_REGS_R10] = "r10",
+    [PT_REGS_R9] = "r9",
+    [PT_REGS_R8] = "r8",
+    [PT_REGS_RAX] = "ax",
+    [PT_REGS_RCX] = "cx",
+    [PT_REGS_RDX] = "dx",
+    [PT_REGS_RSI] = "si",
+    [PT_REGS_RDI] = "di",
+
+    [PT_REGS_ORIG_RAX] = "orig_ax",
+
+    [PT_REGS_RIP] = "ip",
+    [PT_REGS_CS] = "cs",
+    [PT_REGS_EFLAGS] = "flags",
+    [PT_REGS_RSP] = "sp",
+    [PT_REGS_SS] = "ss",
+};
+
+#endif
